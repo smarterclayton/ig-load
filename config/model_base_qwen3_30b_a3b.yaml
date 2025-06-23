@@ -1,11 +1,11 @@
 apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferenceModel
 metadata:
-  name: llama3-base-model
+  name: vllm-qwen3-30b-a3b-base
 spec:
   modelName: base
   targetModels:
-  - name: meta-llama/Llama-3.1-8B-Instruct
+  - name: Qwen/Qwen3-30b-A3B
   criticality: Critical
   poolRef:
-    name: vllm-llama3-8b-instruct
+    name: vllm-qwen3-30b-a3b
