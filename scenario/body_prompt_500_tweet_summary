@@ -1,0 +1,7 @@
+{
+  "model": "tweet-summary",
+  "prompt": "Write as if you were a critic, and be sure to be extra verbose in your description.  Use facts you know or make up details. Start with: San Francisco",
+  "max_tokens": 500,
+  "temperature": 0
+}
+

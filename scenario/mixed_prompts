@@ -1,0 +1,33 @@
+# requests generate 100 output tokens
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_1
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_1
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_1
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_1
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_1
+
+# requests generates 500 output tokens
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_2

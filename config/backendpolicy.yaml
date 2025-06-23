@@ -1,0 +1,11 @@
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: my-backend-policy
+spec:
+  default:
+    timeoutSec: 180
+  targetRef:
+    group: "inference.networking.x-k8s.io"
+    kind: InferencePool
+    name: my-pool

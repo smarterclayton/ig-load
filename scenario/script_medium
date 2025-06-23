@@ -1,0 +1,4 @@
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_500_base

@@ -1,0 +1,7 @@
+{
+  "model": "base",
+  "prompt": "Write as if you were a critic: San Francisco",
+  "max_tokens": 100,
+  "temperature": 0
+}
+

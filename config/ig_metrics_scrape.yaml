@@ -1,0 +1,24 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: ClusterPodMonitoring
+metadata:
+  name: inference-extension
+  labels:
+    app.kubernetes.io/name: inference-gateway
+    app.kubernetes.io/part-of: google-cloud-managed-prometheus
+spec:
+  endpoints:
+  - port: metrics
+    scheme: http
+    interval: 5s
+    path: /metrics
+    authorization:
+      type: Bearer
+      credentials:
+        secret:
+          name: inference-gateway-sa-metrics-reader-secret
+          key: token
+          namespace: default
+
+  selector:
+    matchLabels:
+      app: inference-gateway-ext-proc

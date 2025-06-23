@@ -1,0 +1,24 @@
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_100_tweet_summary
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_100_tweet_summary
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_100_tweet_summary
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_100_tweet_summary
+
+POST http://localhost:8000/v1/completions
+Content-Type: application/json
+Accept: application/json, */*
+@body_prompt_1k_tweet_summary

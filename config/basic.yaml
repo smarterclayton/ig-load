@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-llama3-8b-instruct-lb
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: vllm-llama3-8b-instruct-lb
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: vllm-llama3-8b-instruct-lb
+    spec:
+      containers:
+      - args:
+        - --model
+        - meta-llama/Llama-3.1-8B-Instruct
+        - --tensor-parallel-size
+        - "1"
+        - --port
+        - "8000"
+        - --enable-lora
+        - --max-loras
+        - "4"
+        - --max-cpu-loras
+        - "12"
+        command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+        env:
+        - name: VLLM_USE_V1
+          value: "1"
+        - name: PORT
+          value: "8000"
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: token
+              name: hf-token
+        - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+          value: "true"
+        image: vllm/vllm-openai:latest
+        imagePullPolicy: Always
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: 30
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          periodSeconds: 1
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: lora
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 1
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          periodSeconds: 1
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+          requests:
+            nvidia.com/gpu: "1"
+        startupProbe:
+          failureThreshold: 600
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 2
+          periodSeconds: 1
+          successThreshold: 1
+          timeoutSeconds: 1
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /data
+          name: data
+        - mountPath: /dev/shm
+          name: shm
+        - mountPath: /adapters
+          name: adapters
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      initContainers:
+      - env:
+        - name: DYNAMIC_LORA_ROLLOUT_CONFIG
+          value: /config/configmap.yaml
+        image: us-central1-docker.pkg.dev/k8s-staging-images/gateway-api-inference-extension/lora-syncer:main
+        imagePullPolicy: Always
+        name: lora-adapter-syncer
+        resources: {}
+        restartPolicy: Always
+        stdin: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        tty: true
+        volumeMounts:
+        - mountPath: /config
+          name: config-volume
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 130
+      volumes:
+      - emptyDir: {}
+        name: data
+      - emptyDir:
+          medium: Memory
+        name: shm
+      - emptyDir: {}
+        name: adapters
+      - configMap:
+          defaultMode: 420
+          name: vllm-llama3.1-8b-adapters
+        name: config-volume

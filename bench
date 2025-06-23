@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+
+SCENARIO="${SCENARIO:-bench}"
+TIMEOUT="${TIMEOUT:-300s}"
+OUTPUT="output"
+if [[ ! -d "${OUTPUT}" ]]; then
+  mkdir -p "${OUTPUT}"
+fi
+i=0
+
+ADDR="${ADDR:-$(kubectl get "gateway/${GATEWAY}" -o jsonpath='{.status.addresses[0].value}'):80}"
+
+trap 'echo;echo "interrupted"; pkill -INT -P $$' INT
+
+rm -rf "${OUTPUT}/*.bin"
+
+files=()
+for var in "$@"; do
+  IFS=',' read -r -a parts <<< "${var}"
+  addr="${parts[2]:-${ADDR}}"
+  file="${OUTPUT}/${i}.bin"
+
+  echo "${addr}: ${parts[1]} @ ${parts[0]} QPS (${file})"
+  vegeta attack -rate "${parts[0]}" -duration 0 -targets "${parts[1]}" \
+     -timeout "${TIMEOUT}" \
+     -format http \
+     -connect-to "localhost:8000:${addr}" \
+     -output "${file}" \
+     &
+
+  i=$((i+1))
+  files+=( "${file}" )
+done
+
+echo "status: vegeta report ${OUTPUT}/*.bin"
+wait
