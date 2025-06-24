@@ -5,7 +5,7 @@ metadata:
 spec:
   modelName: base
   targetModels:
-  - name: Qwen/Qwen3-30b-A3B
+  - name: Qwen/Qwen3-30B-A3B
   criticality: Critical
   poolRef:
     name: vllm-qwen3-30b-a3b
