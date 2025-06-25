@@ -10,6 +10,7 @@ up:
 	kubectl run ${LOAD_POD} \
 		--image=gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load:main \
 		--restart=Always \
+		--image-pull-policy=Always \
 		-- sleep infinity
 
 exec:
