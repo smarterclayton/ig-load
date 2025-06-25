@@ -8,7 +8,7 @@ image:
 
 up:
 	kubectl run ${LOAD_POD} \
-		--image=gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load:38394b84f6bc348bedc2f14d3cb19672e1577fb9 \
+		--image=gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load:main \
 		--restart=Always \
 		-- sleep infinity
 
@@ -17,3 +17,4 @@ exec:
 
 down:
 	kubectl delete pod --wait=false --grace-period=1 ${LOAD_POD}
+
