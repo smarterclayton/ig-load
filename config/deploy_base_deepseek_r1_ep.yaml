@@ -1,0 +1,300 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+    name: vllm-deepseek-r1-ep
+spec:
+    replicas: 1
+    leaderWorkerTemplate:
+        size: 2
+        restartPolicy: None #RecreateGroupOnPodRestart
+
+        workerTemplate:
+            metadata:
+              annotations:
+                networking.gke.io/default-interface: 'eth0'
+                networking.gke.io/interfaces: |
+                  [
+                    {"interfaceName":"eth0","network":"default"},
+                    {"interfaceName":"eth2","network":"rdma-0"},
+                    {"interfaceName":"eth3","network":"rdma-1"},
+                    {"interfaceName":"eth4","network":"rdma-2"},
+                    {"interfaceName":"eth5","network":"rdma-3"},
+                    {"interfaceName":"eth6","network":"rdma-4"},
+                    {"interfaceName":"eth7","network":"rdma-5"},
+                    {"interfaceName":"eth8","network":"rdma-6"},
+                    {"interfaceName":"eth9","network":"rdma-7"}
+                  ]
+            spec:
+              nodeSelector:
+                # Until we get nvidia-peermem or nvshmem+dmabuf working on CoS
+                cloud.google.com/gke-nodepool: rdma-test-ubuntu
+              containers:
+              - name: vllm-worker
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
+                  #gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
+                  #quay.io/vllm/automation-vllm:llm-d-43df88b07ccf74b892349dbcf2f0dc4ca9efc243
+                imagePullPolicy: Always
+                workingDir: /code
+                stdin: true
+                tty: true
+                command: ["/bin/bash","-c"]
+                args:
+                  - |
+                    set -euo pipefail
+
+                    # Debugging tools for the environment, libnl required for set_nccl_env.sh
+                    if command -v apt-get >/dev/null 2>&1; then
+                      # Using https://github.com/smarterclayton/vllm-dp-lws/tree/working_branch
+                      apt-get install -y pciutils libnl-3-200 libnl-route-3-200 binutils kmod
+                      VLLM_HOME=/app/venv
+                    else
+                      # Assume we're using the RH midstream image
+                      VLLM_HOME=/opt/vllm
+                      export HF_HUB_OFFLINE=0
+                    fi
+
+                    # Configure gIB
+                    export PATH=/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
+                    source /usr/local/gib/scripts/set_nccl_env.sh
+                    unset NCCL_NET
+                    export NCCL_NET_PLUGIN=/usr/local/gib/lib64/libnccl-net_internal.so
+                    env | sort
+
+                    # Get an interactive debugging environment
+                    if [[ -n "${INTERACTIVE:-}" ]]; then
+                      # mpirun -n 2 -x NVSHMEMTEST_USE_MPI_LAUNCHER=1 $NVSHMEM_PREFIX/bin/perftest/device/pt-to-pt/shmem_put_bw
+                      # cd /app/DeepEP && VIRTUAL_ENV=/app/venv uv run tests/test_low_latency.py
+                      echo "Waiting for /code/launch to run vLLM"
+                      while [[ ! -f /code/launch ]]; do
+                        sleep 10
+                      done
+                      rm /code/launch
+                    fi
+
+                    #################
+                    # INSTALL vLLM
+                    #################
+                    if [[ ! -f "${VLLM_HOME}/bin/vllm" ]]; then
+                      if command -v apt-get >/dev/null 2>&1; then
+                        if [[ -f /init-scripts/vllm.sh ]]; then
+                          VLLM_USE_PRECOMPILED=1 /init-scripts/vllm.sh
+                        elif [[ -f /install-scripts/vllm.sh ]]; then
+                          VLLM_USE_PRECOMPILED=1 /install-scripts/vllm.sh
+                        fi
+                      fi
+                    fi
+
+                    #################
+                    # RUN vLLM
+                    #################
+                    env | sort
+                    START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+                    if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
+                      #################
+                      # Leader-only launch
+                      #################
+                      exec ${VLLM_HOME}/bin/vllm serve \
+                        deepseek-ai/DeepSeek-R1 \
+                        --port 8000 \
+                        --disable-log-requests \
+                        --enable-expert-parallel \
+                        --tensor-parallel-size $TP_SIZE \
+                        --data-parallel-size $DP_SIZE \
+                        --data-parallel-size-local $DP_SIZE_LOCAL \
+                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
+                        --data-parallel-rpc-port 5555 \
+                        --data-parallel-start-rank $START_RANK \
+                        --trust-remote-code
+                    else
+                      #################
+                      # Worker-only launch
+                      #################
+                      exec ${VLLM_HOME}/bin/vllm serve \
+                        deepseek-ai/DeepSeek-R1 \
+                        --port 8000 \
+                        --disable-log-requests \
+                        --enable-expert-parallel \
+                        --tensor-parallel-size $TP_SIZE \
+                        --data-parallel-size $DP_SIZE \
+                        --data-parallel-size-local $DP_SIZE_LOCAL \
+                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
+                        --data-parallel-rpc-port 5555 \
+                        --data-parallel-start-rank $START_RANK \
+                        --trust-remote-code \
+                        --headless
+                    fi
+                env:
+                  - name: INTERACTIVE
+                    value: ""
+
+                  # What branches to build live
+                  - name: VLLM_REPO_URL
+                    value: "https://github.com/vllm-project/vllm.git"
+                  - name: VLLM_BRANCH
+                    value: "main"
+
+                  - name: LD_LIBRARY_PATH
+                    value: /opt/nvshmem-3.2.5-1/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+
+                  # Networking config
+                  - name: NVSHMEM_REMOTE_TRANSPORT
+                    value: "ibgda"
+                  - name: NVSHMEM_IB_ENABLE_IBGDA
+                    value: "true"
+                  # Currently disabled
+                  - name: NVIDIA_GDRCOPY
+                    value: "disabled"
+                  - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+                    value: "eth0"
+                  - name: GLOO_SOCKET_IFNAME
+                    value: "eth0"
+                  - name: NCCL_SOCKET_IFNAME
+                    value: "eth0"
+
+
+                  # Debugging info
+                  - name: UCX_LOG_LEVEL
+                    value: "debug"
+                  - name: NVSHMEM_INFO
+                    value: "true"
+                  - name: NVSHMEM_DEBUG
+                    value: "DEBUG"
+                  - name: NVSHMEM_DEBUG_SUBSYS
+                    value: "ALL"
+                  - name: VLLM_TORCH_PROFILER_DIR
+                    value: "/code/traces"
+                  - name: NCCL_DEBUG
+                    value: trace
+                  - name: VLLM_LOGGING_LEVEL
+                    value: "DEBUG"
+                  # - name: CUDA_LAUNCH_BLOCKING
+                  #   value: "1"
+
+                  # DP/EP configuration in vLLM
+                  - name: VLLM_USE_DEEP_GEMM
+                    value: "0"
+                  - name: VLLM_ALL2ALL_BACKEND
+                    # value: "naive"
+                    # value: "pplx"
+                    # value: "deepep_high_throughput"
+                    value: "deepep_low_latency"
+                  - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+                    value: "1"
+                  - name: DP_SIZE
+                    value: "16"
+                  - name: TP_SIZE
+                    value: "1"
+                  - name: DP_SIZE_LOCAL
+                    value: "8"
+                  - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                    value: "6555"
+                  - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+
+                  - name: HF_HUB_CACHE
+                    value: /huggingface-cache
+                  - name: HF_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: hf-secret
+                        key: HF_TOKEN
+                        optional: true
+                  - name: GH_TOKEN_FROM_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: gh-token-secret
+                        key: GH_TOKEN
+                        optional: true
+
+                  # Configuration for building and configuring torch
+                  - name: MAX_JOBS
+                    value: "128"
+                  - name: TORCH_CUDA_ARCH_LIST
+                    value: "9.0a 10.0"
+
+                # may not be needed on GKE
+                securityContext:
+                  runAsUser: 0  # needed for RH image to be able to override files (runs as vllm)
+                  capabilities:
+                    add:
+                    - "IPC_LOCK"
+                    - "SYS_RAWIO"
+                resources:
+                  limits:
+                    memory: 512Gi
+                    ephemeral-storage: 3Ti
+                    nvidia.com/gpu: "8"
+                    
+                    networking.gke.io.networks/rdma-0: "1"
+                    networking.gke.io.networks/rdma-0.IP: "1"
+                    networking.gke.io.networks/rdma-1: "1"
+                    networking.gke.io.networks/rdma-1.IP: "1"
+                    networking.gke.io.networks/rdma-2: "1"
+                    networking.gke.io.networks/rdma-2.IP: "1"
+                    networking.gke.io.networks/rdma-3: "1"
+                    networking.gke.io.networks/rdma-3.IP: "1"
+                    networking.gke.io.networks/rdma-4: "1"
+                    networking.gke.io.networks/rdma-4.IP: "1"
+                    networking.gke.io.networks/rdma-5: "1"
+                    networking.gke.io.networks/rdma-5.IP: "1"
+                    networking.gke.io.networks/rdma-6: "1"
+                    networking.gke.io.networks/rdma-6.IP: "1"
+                    networking.gke.io.networks/rdma-7: "1"
+                    networking.gke.io.networks/rdma-7.IP: "1"                    
+                  requests:
+                    cpu: 32
+                    memory: 512Gi
+                    ephemeral-storage: 3Ti
+                    nvidia.com/gpu: "8"
+
+                    networking.gke.io.networks/rdma-0: "1"
+                    networking.gke.io.networks/rdma-0.IP: "1"
+                    networking.gke.io.networks/rdma-1: "1"
+                    networking.gke.io.networks/rdma-1.IP: "1"
+                    networking.gke.io.networks/rdma-2: "1"
+                    networking.gke.io.networks/rdma-2.IP: "1"
+                    networking.gke.io.networks/rdma-3: "1"
+                    networking.gke.io.networks/rdma-3.IP: "1"
+                    networking.gke.io.networks/rdma-4: "1"
+                    networking.gke.io.networks/rdma-4.IP: "1"
+                    networking.gke.io.networks/rdma-5: "1"
+                    networking.gke.io.networks/rdma-5.IP: "1"
+                    networking.gke.io.networks/rdma-6: "1"
+                    networking.gke.io.networks/rdma-6.IP: "1"
+                    networking.gke.io.networks/rdma-7: "1"
+                    networking.gke.io.networks/rdma-7.IP: "1"
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
+                  - name: init-scripts-volume
+                    mountPath: /init-scripts
+                  - name: hf-cache
+                    mountPath: /huggingface-cache
+                  - name: vllm
+                    mountPath: /code
+                  # Required to access the gIB configuration for NCCL
+                  - mountPath: /usr/local/gib
+                    name: gib
+              volumes:
+                # Volume for the init script from ConfigMap
+                - name: init-scripts-volume
+                  configMap:
+                    name: vllm-init-scripts-config
+                    defaultMode: 0755 # Set execute permissions for the script
+                    optional: true
+                # Needed for NCCL to function
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 1Gi
+                - name: hf-cache
+                  emptyDir: {}
+                - name: vllm
+                  emptyDir: {}
+                # Necessary for gIB
+                - hostPath:
+                    path: /home/kubernetes/bin/gib
+                    type: ""
+                  name: gib

@@ -1,0 +1,20 @@
+# kubectl exec -it vllm-test -- /bin/bash
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  labels:
+    run: vllm-test
+  name: vllm-test
+spec:
+  containers:
+  - command:
+    - sleep
+    - infinity
+    image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
+    name: vllm-test
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
