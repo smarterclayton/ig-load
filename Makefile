@@ -1,5 +1,6 @@
 GIT_STATE ?= $(shell git describe --match=__never_match__ --always --abbrev=13 --dirty)
 LOAD_POD ?= ig-load
+LOAD_IMAGE ?= gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load:main
 
 image:
 	[[ -w "$(shell which docker)" ]] || (echo "Cannot invoke 'docker', may require 'sudo'"; exit 1)
@@ -8,10 +9,11 @@ image:
 
 up:
 	kubectl run ${LOAD_POD} \
-		--image=gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load:main \
+		--image=${LOAD_IMAGE} \
 		--restart=Always \
 		--image-pull-policy=Always \
-		-- sleep infinity
+		--command \
+		-- /bin/bash -c 'sleep infinity'
 
 exec:
 	kubectl exec -it ${LOAD_POD} -- /bin/bash

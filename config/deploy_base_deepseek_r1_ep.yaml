@@ -138,9 +138,9 @@ spec:
 
                   # What branches to build live
                   - name: VLLM_REPO_URL
-                    value: "https://github.com/vllm-project/vllm.git"
+                    value: "https://github.com/neuralmagic/vllm.git"
                   - name: VLLM_BRANCH
-                    value: "main"
+                    value: "wye/fix-batched-deepgemm-error"
                   - name: DEEPGEMM_REPO_URL
                     value: "https://github.com/RayWang96/DeepGEMM.git"
                   - name: DEEPGEMM_BRANCH
