@@ -1,0 +1,27 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: igw-deepseek-r1-ep
+spec:
+  gatewayClassName: gke-l7-rilb
+  listeners:
+    - protocol: HTTP
+      port: 80
+      name: http
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: igw-deepseek-r1-ep
+spec:
+  parentRefs:
+  - name: igw-deepseek-r1-ep
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: vllm-igw-deepseek-r1-ep
+      group: inference.networking.x-k8s.io
+      kind: InferencePool

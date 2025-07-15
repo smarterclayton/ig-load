@@ -1,0 +1,11 @@
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceModel
+metadata:
+  name: vllm-deepseek-r1-ep
+spec:
+  modelName: base
+  targetModels:
+  - name: deepseek-ai/DeepSeek-R1
+  criticality: Critical
+  poolRef:
+    name: vllm-deepseek-r1-ep

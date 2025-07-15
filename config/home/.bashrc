@@ -9,4 +9,7 @@ shopt -s cmdhist
 
 export GREP_COLORS='mt=1;32;40'
 
-export PATH=${GOPATH}/bin:${PATH}
+export PATH=${GOPATH}/bin:/root/bin:${PATH}
+
+export OMPI_ALLOW_RUN_AS_ROOT=1
+export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
