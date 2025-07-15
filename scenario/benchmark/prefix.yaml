@@ -1,0 +1,56 @@
+load:
+  type: poisson
+  interval: 15
+  stages:
+  - rate: 1
+    duration: 60
+  - rate: 2
+    duration: 60
+  - rate: 4
+    duration: 60
+  - rate: 8
+    duration: 60
+  - rate: 16
+    duration: 120
+  - rate: 20
+    duration: 120
+  - rate: 24
+    duration: 120
+  - rate: 28
+    duration: 120
+api: 
+  type: completion
+server:
+  type: vllm
+  model_name: base
+  base_url: http://192.168.0.17:80
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: deepseek-ai/DeepSeek-R1
+data:
+  type: random
+  input_distribution:
+    min: 10
+    max: 2000
+    mean: 500
+    std: 100
+    total_count: 100000
+  output_distribution:
+    min: 10
+    max: 500
+    mean: 50
+    std: 25
+    total_count: 100000
+  # shared_prefix:
+  #   num_groups: 10                # Number of distinct shared prefixes
+  #   num_prompts_per_group: 10     # Number of unique questions per shared prefix
+  #   system_prompt_len: 100        # Length of the shared prefix (in tokens)
+  #   question_len: 500             # Length of the unique question part (in tokens)
+  #   output_len: 50                # Target length for the model's generated output (in tokens)
+metrics:
+  type: default
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
