@@ -30,7 +30,7 @@ spec:
                 cloud.google.com/gke-os-distribution: cos
               containers:
               - name: vllm-worker
-                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:nvshmem
                   #gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
                   #quay.io/vllm/automation-vllm:llm-d-43df88b07ccf74b892349dbcf2f0dc4ca9efc243
                 imagePullPolicy: Always
@@ -45,11 +45,18 @@ spec:
                     # Debugging tools for the environment, libnl required for set_nccl_env.sh
                     if command -v apt-get >/dev/null 2>&1; then
                       # Using https://github.com/smarterclayton/vllm-dp-lws/tree/working_branch
-                      apt-get install -y pciutils libnl-3-200 libnl-route-3-200 binutils kmod
-                      VLLM_HOME=/app/venv
+                      apt-get install -y pciutils libnl-3-200 libnl-route-3-200 binutils kmod gdb python3.12-dbg
+                    fi
+
+                    # Create a sourceable script that can be used from exec sessions
+                    cat <<'EOF' >/tmp/env
+                    #!/bin/bash
+
+                    if command -v apt-get >/dev/null 2>&1; then
+                      export VLLM_HOME=/app/venv
                     else
                       # Assume we're using the RH midstream image
-                      VLLM_HOME=/opt/vllm
+                      export VLLM_HOME=/opt/vllm
                       export HF_HUB_OFFLINE=0
                     fi
 
@@ -58,20 +65,53 @@ spec:
                     source /usr/local/gib/scripts/set_nccl_env.sh
                     unset NCCL_NET
                     export NCCL_NET_PLUGIN=/usr/local/gib/lib64/libnccl-net_internal.so
-                    env | sort
+                    export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
-                    # Get an interactive debugging environment
-                    if [[ -n "${INTERACTIVE:-}" ]]; then
-                      # mpirun -n 2 -x NVSHMEMTEST_USE_MPI_LAUNCHER=1 $NVSHMEM_PREFIX/bin/perftest/device/pt-to-pt/shmem_put_bw
-                      # cd /app/DeepEP && VIRTUAL_ENV=/app/venv uv run tests/test_low_latency.py
-                      echo "Waiting for /code/launch to run vLLM"
-                      while [[ ! -f /code/launch ]]; do
-                        sleep 10
-                      done
-                      rm /code/launch
+                    if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
+                      #################
+                      # Leader-only launch
+                      #################
+                      read -r -d '' COMMAND <<-EOC || true
+                      ${VLLM_HOME}/bin/vllm serve \
+                        deepseek-ai/DeepSeek-R1 \
+                        --port 8000 \
+                        --disable-log-requests \
+                        --enable-expert-parallel \
+                        --tensor-parallel-size $TP_SIZE \
+                        --data-parallel-size $DP_SIZE \
+                        --data-parallel-size-local $DP_SIZE_LOCAL \
+                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
+                        --data-parallel-rpc-port 5555 \
+                        --data-parallel-start-rank $START_RANK \
+                        --trust-remote-code
+                    EOC
+                    else
+                      #################
+                      # Worker-only launch
+                      #################
+                      read -r -d '' COMMAND <<-EOC || true
+                      ${VLLM_HOME}/bin/vllm serve \
+                        deepseek-ai/DeepSeek-R1 \
+                        --port 8000 \
+                        --disable-log-requests \
+                        --enable-expert-parallel \
+                        --tensor-parallel-size $TP_SIZE \
+                        --data-parallel-size $DP_SIZE \
+                        --data-parallel-size-local $DP_SIZE_LOCAL \
+                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
+                        --data-parallel-rpc-port 5555 \
+                        --data-parallel-start-rank $START_RANK \
+                        --trust-remote-code \
+                        --headless
+                    EOC
                     fi
+                    read -r -d '' BENCH_DECODE <<-EOC || true
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 100 --random-output-len 1000  --max-concurrency 512 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
+                    EOC
+                    EOF
+                    chmod ug+x /tmp/env
 
-                    ##################
+                    ################## 
                     # INSTALL DeepGEMM
                     ##################
                     if [[ -n "${DEEPGEMM_BRANCH:-}" ]]; then
@@ -93,61 +133,30 @@ spec:
                       fi
                     fi
 
-                    #################
-                    # RUN vLLM
-                    #################
-                    env | sort
-                    START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
-                    if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
-                      #################
-                      # Leader-only launch
-                      #################
-                      exec ${VLLM_HOME}/bin/vllm serve \
-                        deepseek-ai/DeepSeek-R1 \
-                        --port 8000 \
-                        --disable-log-requests \
-                        --enable-expert-parallel \
-                        --tensor-parallel-size $TP_SIZE \
-                        --data-parallel-size $DP_SIZE \
-                        --data-parallel-size-local $DP_SIZE_LOCAL \
-                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
-                        --data-parallel-rpc-port 5555 \
-                        --data-parallel-start-rank $START_RANK \
-                        --trust-remote-code
-                    else
-                      #################
-                      # Worker-only launch
-                      #################
-                      exec ${VLLM_HOME}/bin/vllm serve \
-                        deepseek-ai/DeepSeek-R1 \
-                        --port 8000 \
-                        --disable-log-requests \
-                        --enable-expert-parallel \
-                        --tensor-parallel-size $TP_SIZE \
-                        --data-parallel-size $DP_SIZE \
-                        --data-parallel-size-local $DP_SIZE_LOCAL \
-                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
-                        --data-parallel-rpc-port 5555 \
-                        --data-parallel-start-rank $START_RANK \
-                        --trust-remote-code \
-                        --headless
+                    # Get an interactive debugging environment
+                    if [[ -n "${INTERACTIVE:-}" ]]; then
+                      echo "Waiting for /code/launch to run vLLM"
+                      while [[ ! -f /code/launch ]]; do
+                        sleep 10
+                      done
+                      rm /code/launch
                     fi
+
+                    source /tmp/env
+                    env | sort
+                    ${COMMAND}
                 env:
                   - name: INTERACTIVE
-                    value: "1"
+                    value: ""
 
                   # What branches to build live
                   - name: VLLM_REPO_URL
-                    value: "https://github.com/vllm-project/vllm.git"
+                    value: "https://github.com/smarterclayton/vllm.git"
                   - name: VLLM_BRANCH
-                    value: "main"
-                  - name: DEEPGEMM_REPO_URL
-                    value: "https://github.com/RayWang96/DeepGEMM.git"
-                  - name: DEEPGEMM_BRANCH
-                    value: "multi_arch_support"
+                    value: "working"
 
                   - name: LD_LIBRARY_PATH
-                    value: /opt/nvshmem-3.2.5-1/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+                    value: /opt/nvshmem-3.3.9/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 
                   # Networking config
                   - name: NVSHMEM_REMOTE_TRANSPORT
@@ -232,6 +241,7 @@ spec:
                 # may not be needed on GKE
                 securityContext:
                   runAsUser: 0  # needed for RH image to be able to override files (runs as vllm)
+                  privileged: true # needed to open the host device for UAR ??
                   capabilities:
                     add:
                     - "IPC_LOCK"
