@@ -30,9 +30,8 @@ spec:
                 cloud.google.com/gke-os-distribution: ubuntu
               containers:
               - name: vllm-worker
-                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
-                  #gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch
-                  #quay.io/vllm/automation-vllm:llm-d-43df88b07ccf74b892349dbcf2f0dc4ca9efc243
+                # Use NVSHMEM 3.2.5 with the DeepEP patch and nvidia-peermem on Ubuntu
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch_cuda_129
                 imagePullPolicy: Always
                 workingDir: /code
                 stdin: true
@@ -45,11 +44,18 @@ spec:
                     # Debugging tools for the environment, libnl required for set_nccl_env.sh
                     if command -v apt-get >/dev/null 2>&1; then
                       # Using https://github.com/smarterclayton/vllm-dp-lws/tree/working_branch
-                      apt-get install -y pciutils libnl-3-200 libnl-route-3-200 binutils kmod
-                      VLLM_HOME=/app/venv
+                      apt-get install -y pciutils binutils kmod #gdb python3.12-dbg
+                    fi
+
+                    # Create ~/.bash_profile so that kubectl exec -- /bin/bash -l is ready to run
+                    cat <<'EOF' >> ~/.bash_profile
+                    #!/bin/bash
+
+                    if command -v apt-get >/dev/null 2>&1; then
+                      export VLLM_HOME=/app/venv
                     else
                       # Assume we're using the RH midstream image
-                      VLLM_HOME=/opt/vllm
+                      export VLLM_HOME=/opt/vllm
                       export HF_HUB_OFFLINE=0
                     fi
 
@@ -58,53 +64,17 @@ spec:
                     source /usr/local/gib/scripts/set_nccl_env.sh
                     unset NCCL_NET
                     export NCCL_NET_PLUGIN=/usr/local/gib/lib64/libnccl-net_internal.so
-                    env | sort
+                    export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
-                    # Get an interactive debugging environment
-                    if [[ -n "${INTERACTIVE:-}" ]]; then
-                      # mpirun -n 2 -x NVSHMEMTEST_USE_MPI_LAUNCHER=1 $NVSHMEM_PREFIX/bin/perftest/device/pt-to-pt/shmem_put_bw
-                      # cd /app/DeepEP && VIRTUAL_ENV=/app/venv uv run tests/test_low_latency.py
-                      echo "Waiting for /code/launch to run vLLM"
-                      while [[ ! -f /code/launch ]]; do
-                        sleep 10
-                      done
-                      rm /code/launch
-                    fi
-
-                    ##################
-                    # INSTALL DeepGEMM
-                    ##################
-                    if [[ -n "${DEEPGEMM_BRANCH:-}" ]]; then
-                      if [[ -f /init-scripts/deepgemm.sh ]]; then
-                        /init-scripts/deepgemm.sh
-                      elif [[ -f /install-scripts/deepgemm.sh ]]; then
-                        /install-scripts/deepgemm.sh
-                      fi
-                    fi
-
-                    #################
-                    # INSTALL vLLM
-                    #################
-                    if [[ -n "${VLLM_BRANCH:-}" ]]; then
-                      if [[ -f /init-scripts/vllm.sh ]]; then
-                        VLLM_USE_PRECOMPILED=1 /init-scripts/vllm.sh
-                      elif [[ -f /install-scripts/vllm.sh ]]; then
-                        VLLM_USE_PRECOMPILED=1 /install-scripts/vllm.sh
-                      fi
-                    fi
-
-                    #################
-                    # RUN vLLM
-                    #################
-                    env | sort
-                    START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
                     if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
                       #################
                       # Leader-only launch
                       #################
-                      exec ${VLLM_HOME}/bin/vllm serve \
+                      serve=(
+                      ${VLLM_HOME}/bin/vllm serve \
                         deepseek-ai/DeepSeek-R1 \
                         --port 8000 \
+                        --enforce-eager \
                         --disable-log-requests \
                         --enable-expert-parallel \
                         --tensor-parallel-size $TP_SIZE \
@@ -114,13 +84,16 @@ spec:
                         --data-parallel-rpc-port 5555 \
                         --data-parallel-start-rank $START_RANK \
                         --trust-remote-code
+                      )
                     else
                       #################
                       # Worker-only launch
                       #################
-                      exec ${VLLM_HOME}/bin/vllm serve \
+                      serve=(
+                      ${VLLM_HOME}/bin/vllm serve \
                         deepseek-ai/DeepSeek-R1 \
                         --port 8000 \
+                        --enforce-eager \
                         --disable-log-requests \
                         --enable-expert-parallel \
                         --tensor-parallel-size $TP_SIZE \
@@ -131,20 +104,80 @@ spec:
                         --data-parallel-start-rank $START_RANK \
                         --trust-remote-code \
                         --headless
+                      )
                     fi
+                    function bench_decode {
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 100 --random-output-len 1000  --max-concurrency 512 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
+                    }
+                    function serve_simple {
+                      ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port 8000 --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+                    }
+                    EOF
+                    chmod ug+x ~/.bash_profile
+
+
+                    ################## 
+                    # INSTALL DeepGEMM
+                    ##################
+                    if [[ -n "${DEEPGEMM_BRANCH:-}" ]]; then
+                      if [[ -f /init-scripts/deepgemm.sh ]]; then
+                        /init-scripts/deepgemm.sh
+                      elif [[ -f /install-scripts/deepgemm.sh ]]; then
+                        /install-scripts/deepgemm.sh
+                      fi
+                    fi
+
+                    ######################
+                    # INSTALL Dependencies
+                    ######################
+                    for script in flashinfer; do
+                      for location in /init-scripts /install-scripts; do
+                        if [[ -f ${location}/${script}.sh ]]; then
+                          ${location}/${script}.sh
+                          break
+                        fi
+                      done
+                    done
+
+                    #################
+                    # INSTALL vLLM
+                    #################
+                    if [[ -n "${VLLM_BRANCH:-}" ]]; then
+                      if [[ -f /init-scripts/vllm.sh ]]; then
+                        /init-scripts/vllm.sh
+                      elif [[ -f /install-scripts/vllm.sh ]]; then
+                        /install-scripts/vllm.sh
+                      fi
+                    fi
+
+                    # Hold the container before launch to allow debugging
+                    if [[ -n "${INTERACTIVE:-}" ]]; then
+                      echo "Waiting for /code/launch to run vLLM"
+                      while [[ ! -f /code/launch ]]; do
+                        sleep 10
+                      done
+                      rm /code/launch
+                    fi
+
+                    source ~/.bash_profile
+                    env | sort
+                    exec "${serve[@]}"
                 env:
                   - name: INTERACTIVE
                     value: ""
 
-                  # What branches to build live
+                  # Integrate fixes for B200 and DeepGEMM initialization
                   - name: VLLM_REPO_URL
-                    value: "https://github.com/neuralmagic/vllm.git"
+                    value: "https://github.com/smarterclayton/vllm.git"
                   - name: VLLM_BRANCH
-                    value: "wye/fix-batched-deepgemm-error"
+                    value: "working_4"
+                  # Fix for https://github.com/vllm-project/vllm/issues/21542
                   - name: DEEPGEMM_REPO_URL
                     value: "https://github.com/RayWang96/DeepGEMM.git"
                   - name: DEEPGEMM_BRANCH
                     value: "multi_arch_support"
+                  - name: DEEPGEMM_COMMIT
+                    value: "cc416ee4faf0533a9263c2de814e5565f56ca1cc"
 
                   - name: LD_LIBRARY_PATH
                     value: /opt/nvshmem-3.2.5-1/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
@@ -193,6 +226,12 @@ spec:
                     # value: "pplx"
                     # value: "deepep_high_throughput"
                     value: "deepep_low_latency"
+                  # Enabling the Cutlass kernels for attention improves decode perf by about 10%,
+                  # but there is an intermittent core-dump that appears to be caused by JIT compilation
+                  # of the flashinfer kernels to B200. We should consider AOT compilation and triggering
+                  # JIT prior to the first request being served.
+                  # - name: VLLM_ATTENTION_BACKEND
+                  #   value: CUTLASS_MLA_VLLM_V1
                   - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
                     value: "1"
                   - name: DP_SIZE

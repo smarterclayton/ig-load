@@ -3,3 +3,5 @@ curl -i ${GW_IP}/v1/completions -H 'Content-Type: application/json' -d @/ig-load
 cd /ig-load/scenario && ADDR=${GW_IP} ../bench 1,script_1k_base &
 vegeta report /ig-load/scenario/output/*.bin
 netstat -ptn | grep -i established
+GW_IP=vllm-deepseek-r1-ep:8000
+GW_IP=vllm-deepseek-r1-ep-cos:8000
