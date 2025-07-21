@@ -38,8 +38,8 @@ spec:
             - name: HUGGING_FACE_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: hf-token
-                  key: token
+                  name: hf-secret
+                  key: HF_TOKEN
             - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
               value: "true"
           ports:

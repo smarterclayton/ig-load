@@ -45,8 +45,8 @@ spec:
         - name: HUGGING_FACE_HUB_TOKEN
           valueFrom:
             secretKeyRef:
-              key: token
-              name: hf-token
+              key: HF_TOKEN
+              name: hf-secret
         - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
           value: "true"
         image: vllm/vllm-openai:latest

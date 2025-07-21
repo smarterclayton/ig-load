@@ -1,6 +1,7 @@
 GIT_STATE ?= $(shell git describe --match=__never_match__ --always --abbrev=13 --dirty)
 LOAD_POD ?= ig-load
 LOAD_IMAGE ?= gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load:main
+HF_TOKEN ?= invalid
 
 image:
 	[[ -w "$(shell which docker)" ]] || (echo "Cannot invoke 'docker', may require 'sudo'"; exit 1)
@@ -13,7 +14,7 @@ up:
 		--restart=Always \
 		--image-pull-policy=Always \
 		--command \
-		-- /bin/bash -c 'sleep infinity'
+		-- /bin/bash -c 'trap "" SIGCHLD; sleep infinity'
 
 exec:
 	kubectl exec -it ${LOAD_POD} -- /bin/bash
@@ -21,3 +22,5 @@ exec:
 down:
 	kubectl delete pod --wait=false --grace-period=1 ${LOAD_POD}
 
+hf_secret:
+	kubectl create secret generic hf-secret "--from-literal=HF_TOKEN=${HF_TOKEN}"
