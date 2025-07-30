@@ -26,8 +26,6 @@ spec:
           - "8000"
           - "--max-num-seq"
           - "1024"
-          - "--compilation-config"
-          - "3"
           env:
             - name: PORT
               value: "8000"
@@ -38,6 +36,8 @@ spec:
                   key: HF_TOKEN
             - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
               value: "false"
+            - name: LD_LIBRARY_PATH
+              value: /usr/local/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
           ports:
             - containerPort: 8000
               name: http
