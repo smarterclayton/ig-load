@@ -25,13 +25,10 @@ spec:
                     {"interfaceName":"eth9","network":"rdma-7"}
                   ]
             spec:
-              nodeSelector:
-                # Until we get nvidia-peermem or nvshmem+dmabuf working on CoS
-                cloud.google.com/gke-os-distribution: ubuntu
               containers:
               - name: vllm-worker
-                # Use NVSHMEM 3.2.5 with the DeepEP patch and nvidia-peermem on Ubuntu
-                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:working_branch_cuda_129
+                # Use NVSHMEM 3.3.9 without the DeepEP patch to use DMABuf with CoS
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main
                 imagePullPolicy: Always
                 workingDir: /code
                 stdin: true
@@ -41,15 +38,28 @@ spec:
                   - |
                     set -euo pipefail
 
+                    if [[ -n "${DROP_KERNEL_CACHE}" ]]; then
+                      rm -rf /root/.nv/ComputeCache/*
+                    fi
+
                     # Debugging tools for the environment, libnl required for set_nccl_env.sh
                     if command -v apt-get >/dev/null 2>&1; then
                       # Using https://github.com/smarterclayton/vllm-dp-lws/tree/working_branch
                       apt-get install -y pciutils binutils kmod #gdb python3.12-dbg
                     fi
 
-                    # Create ~/.bash_profile so that kubectl exec -- /bin/bash -l is ready to run
-                    cat <<'EOF' >> ~/.bash_profile
+                    # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
+                    cat <<'EOF' > ~/.bashrc
                     #!/bin/bash
+
+                    bind '"\e[A":history-search-backward'
+                    bind '"\e[B":history-search-forward'
+
+                    shopt -s histappend
+                    export HISTFILESIZE=1000000
+                    export HISTSIZE=1000000
+                    export HISTCONTROL=ignoreboth
+                    shopt -s cmdhist
 
                     if command -v apt-get >/dev/null 2>&1; then
                       export VLLM_HOME=/app/venv
@@ -106,31 +116,33 @@ spec:
                         --headless
                       )
                     fi
+
+                    # Run a benchmark that is decode-only
                     function bench_decode {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 100 --random-output-len 1000  --max-concurrency 512 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 1 --random-output-len 1000 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
                     }
+                    # Run a benchmark with mixed prefill and decode
+                    function bench_mixed {
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 100 --random-output-len 1000 --max-concurrency 512 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
+                    }
+                    # Start Qwen3 for a faster and simpler MoE test harness
                     function serve_simple {
                       ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port 8000 --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
                     }
+                    # Execute DeepEP's internode latency and tuning test
+                    function test_internode {
+                      VIRTUAL_ENV=/app/venv WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) uv run /app/DeepEP/tests/test_internode.py
+                    }
                     EOF
-                    chmod ug+x ~/.bash_profile
-
-
-                    ################## 
-                    # INSTALL DeepGEMM
-                    ##################
-                    if [[ -n "${DEEPGEMM_BRANCH:-}" ]]; then
-                      if [[ -f /init-scripts/deepgemm.sh ]]; then
-                        /init-scripts/deepgemm.sh
-                      elif [[ -f /install-scripts/deepgemm.sh ]]; then
-                        /install-scripts/deepgemm.sh
-                      fi
-                    fi
 
                     ######################
                     # INSTALL Dependencies
                     ######################
-                    for script in flashinfer; do
+                    for script in deepgemm vllm; do
+                      branch="${script^^}_BRANCH"
+                      if [[ -z "${!branch-}" ]]; then
+                        continue
+                      fi
                       for location in /init-scripts /install-scripts; do
                         if [[ -f ${location}/${script}.sh ]]; then
                           ${location}/${script}.sh
@@ -138,17 +150,6 @@ spec:
                         fi
                       done
                     done
-
-                    #################
-                    # INSTALL vLLM
-                    #################
-                    if [[ -n "${VLLM_BRANCH:-}" ]]; then
-                      if [[ -f /init-scripts/vllm.sh ]]; then
-                        /init-scripts/vllm.sh
-                      elif [[ -f /install-scripts/vllm.sh ]]; then
-                        /install-scripts/vllm.sh
-                      fi
-                    fi
 
                     # Hold the container before launch to allow debugging
                     if [[ -n "${INTERACTIVE:-}" ]]; then
@@ -159,28 +160,36 @@ spec:
                       rm /code/launch
                     fi
 
-                    source ~/.bash_profile
+                    source ~/.bashrc
                     env | sort
                     exec "${serve[@]}"
                 env:
                   - name: INTERACTIVE
                     value: ""
+                  - name: DROP_KERNEL_CACHE
+                    value: ""
 
-                  # Integrate fixes for B200 and DeepGEMM initialization
+                  # Use a recent vLLM commit that is known working
                   - name: VLLM_REPO_URL
-                    value: "https://github.com/smarterclayton/vllm.git"
+                    value: "https://github.com/vllm-project/vllm.git"
                   - name: VLLM_BRANCH
-                    value: "working_4"
-                  # Fix for https://github.com/vllm-project/vllm/issues/21542
+                    value: "main"
+                  # - name: VLLM_COMMIT
+                    value: "4da8bf20d08f1f8f97a4839d580eb923d0ca9415" # known working
+                    # value: "eec890c1c1cdf6d4bbf4c0563fac54abe80ab8b6" # https://github.com/vllm-project/vllm/pull/22399
+                    # value: "6d8d0a24c02bfd84d46b3016b865a44f048ae84b" # v0.10.0
                   - name: DEEPGEMM_REPO_URL
-                    value: "https://github.com/RayWang96/DeepGEMM.git"
+                    value: "https://github.com/deepseek-ai/DeepGEMM.git" 
                   - name: DEEPGEMM_BRANCH
-                    value: "multi_arch_support"
+                    value: "main"
                   - name: DEEPGEMM_COMMIT
-                    value: "cc416ee4faf0533a9263c2de814e5565f56ca1cc"
+                    value: "7b6b5563b9d4c1ae07ffbce7f78ad3ac9204827c" # https://github.com/deepseek-ai/DeepGEMM/pull/154
+                  # Ensure we are using the latest flashinfer until we fix the crash
+                  - name: FLASHINFER_BRANCH
+                    value: "main"
 
                   - name: LD_LIBRARY_PATH
-                    value: /opt/nvshmem-3.2.5-1/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+                    value: /opt/nvshmem-3.3.9/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 
                   # Networking config
                   - name: NVSHMEM_REMOTE_TRANSPORT
@@ -194,9 +203,6 @@ spec:
                     value: "eth0"
                   - name: GLOO_SOCKET_IFNAME
                     value: "eth0"
-                  #- name: NCCL_SOCKET_IFNAME
-                  #  value: "eth0"
-
 
                   # Debugging info
                   - name: UCX_LOG_LEVEL
@@ -210,7 +216,7 @@ spec:
                   - name: VLLM_TORCH_PROFILER_DIR
                     value: "/code/traces"
                   - name: NCCL_DEBUG
-                    value: trace
+                    value: INFO # trace
                   - name: VLLM_LOGGING_LEVEL
                     value: "DEBUG"
                   - name: HF_HUB_DISABLE_PROGRESS_BARS
@@ -227,11 +233,9 @@ spec:
                     # value: "deepep_high_throughput"
                     value: "deepep_low_latency"
                   # Enabling the Cutlass kernels for attention improves decode perf by about 10%,
-                  # but there is an intermittent core-dump that appears to be caused by JIT compilation
-                  # of the flashinfer kernels to B200. We should consider AOT compilation and triggering
-                  # JIT prior to the first request being served.
+                  # but there is an intermittent hang that seems to be triggered by enabling this path.
                   # - name: VLLM_ATTENTION_BACKEND
-                  #   value: CUTLASS_MLA_VLLM_V1
+                  #   value: CUTLASS_MLA
                   - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
                     value: "1"
                   - name: DP_SIZE
@@ -247,6 +251,9 @@ spec:
                       fieldRef:
                         fieldPath: status.podIP
 
+                  # Cache FlashInfer JIT into the ComputeCache mount as well
+                  - name: FLASHINFER_WORKSPACE_BASE
+                    value: /root/.nv/ComputeCache
                   - name: HF_HUB_CACHE
                     value: /huggingface-cache
                   - name: HF_TOKEN
@@ -271,6 +278,7 @@ spec:
                 # may not be needed on GKE
                 securityContext:
                   runAsUser: 0  # needed for RH image to be able to override files (runs as vllm)
+                  privileged: true # needed to open the host device for UAR ??
                   capabilities:
                     add:
                     - "IPC_LOCK"
@@ -326,6 +334,8 @@ spec:
                     mountPath: /init-scripts
                   - name: hf-cache
                     mountPath: /huggingface-cache
+                  - name: nv-compute-cache
+                    mountPath: /root/.nv/ComputeCache
                   - name: vllm
                     mountPath: /code
                   # Required to access the gIB configuration for NCCL
@@ -347,6 +357,10 @@ spec:
                 - name: hf-cache
                   hostPath:
                     path: /mnt/stateful_partition/kube-ephemeral-ssd/shared_disk/hfcache/
+                    type: DirectoryOrCreate
+                - name: nv-compute-cache
+                  hostPath:
+                    path: /mnt/stateful_partition/kube-ephemeral-ssd/shared_disk/nv-compute-cache
                     type: DirectoryOrCreate
                 - name: vllm
                   emptyDir: {}
