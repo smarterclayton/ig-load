@@ -45,7 +45,10 @@ spec:
                     # Debugging tools for the environment, libnl required for set_nccl_env.sh
                     if command -v apt-get >/dev/null 2>&1; then
                       # Using https://github.com/smarterclayton/vllm-dp-lws/tree/working_branch
-                      apt-get install -y pciutils binutils kmod #gdb python3.12-dbg
+                      apt-get install -y pciutils binutils kmod strace gdb # python3.12-dbg
+                    else
+                      dnf install -qy gdb
+                      # dnf debuginfo-install -qy python3.12-3.12.9-1.el9_6.1.x86_64
                     fi
 
                     # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
@@ -119,11 +122,11 @@ spec:
 
                     # Run a benchmark that is decode-only
                     function bench_decode {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 1 --random-output-len 1000 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len 1 --random-output-len 100 --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
                     }
                     # Run a benchmark with mixed prefill and decode
                     function bench_mixed {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --random-input-len 100 --random-output-len 1000 --max-concurrency 512 --seed $(date +%M%H%M%S) --num-prompts 512 --ignore-eos
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-100} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-512}
                     }
                     # Start Qwen3 for a faster and simpler MoE test harness
                     function serve_simple {
@@ -135,10 +138,11 @@ spec:
                     }
                     EOF
 
-                    ######################
-                    # INSTALL Dependencies
-                    ######################
-                    for script in deepgemm vllm; do
+                    #######################################################
+                    # INSTALL Dependencies that have a _BRANCH variable set
+                    #######################################################
+                    components=( deepep deepgemm flashinfer vllm )
+                    for script in "${components[@]}"; do
                       branch="${script^^}_BRANCH"
                       if [[ -z "${!branch-}" ]]; then
                         continue
@@ -162,6 +166,7 @@ spec:
 
                     source ~/.bashrc
                     env | sort
+
                     exec "${serve[@]}"
                 env:
                   - name: INTERACTIVE
@@ -170,23 +175,32 @@ spec:
                     value: ""
 
                   # Use a recent vLLM commit that is known working
-                  - name: VLLM_REPO_URL
-                    value: "https://github.com/vllm-project/vllm.git"
+                  # - name: VLLM_REPO_URL
+                  #   value: "https://github.com/vllm-project/vllm.git"
                   - name: VLLM_BRANCH
                     value: "main"
-                  # - name: VLLM_COMMIT
-                    value: "4da8bf20d08f1f8f97a4839d580eb923d0ca9415" # known working
+                  - name: VLLM_COMMIT
+                    value: 4d9c61993ac4209c97b3afef237b2387f2cd9b97
+                    # value: 4fc722eca # works without flashinfer
+                    # value: fe91ce959 # bisect midpoint between 4da8bf20d08f1f8f97a4839d580eb923d0ca9415 and 8/19 head, did not work due to not found _aqlm_gemm symbol
+                    # value: "4da8bf20d08f1f8f97a4839d580eb923d0ca9415" # known working
                     # value: "eec890c1c1cdf6d4bbf4c0563fac54abe80ab8b6" # https://github.com/vllm-project/vllm/pull/22399
                     # value: "6d8d0a24c02bfd84d46b3016b865a44f048ae84b" # v0.10.0
-                  - name: DEEPGEMM_REPO_URL
-                    value: "https://github.com/deepseek-ai/DeepGEMM.git" 
+                  # - name: DEEPEP_BRANCH
+                  #   value: "main"
+                  # - name: DEEPEP_COMMIT
+                  #   value: "26cf250" # works with 4d9c61993ac4209c97b3afef237b2387f2cd9b97
+                  #- name: DEEPGEMM_REPO_URL
+                  #  value: "https://github.com/deepseek-ai/DeepGEMM.git"
                   - name: DEEPGEMM_BRANCH
                     value: "main"
                   - name: DEEPGEMM_COMMIT
-                    value: "7b6b5563b9d4c1ae07ffbce7f78ad3ac9204827c" # https://github.com/deepseek-ai/DeepGEMM/pull/154
+                    value: "f85ec64" # works with 4d9c61993ac4209c97b3afef237b2387f2cd9b97
                   # Ensure we are using the latest flashinfer until we fix the crash
                   - name: FLASHINFER_BRANCH
                     value: "main"
+                  - name: FLASHINFER_COMMIT
+                    value: "dd9a333412ab15680affe6a949a60ea911295a2a" # v0.2.12, works with 4d9c61993ac4209c97b3afef237b2387f2cd9b97
 
                   - name: LD_LIBRARY_PATH
                     value: /opt/nvshmem-3.3.9/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
@@ -221,21 +235,24 @@ spec:
                     value: "DEBUG"
                   - name: HF_HUB_DISABLE_PROGRESS_BARS
                     value: "1"
-                  # - name: CUDA_LAUNCH_BLOCKING
-                  #   value: "1"
+                  - name: CUDA_LAUNCH_BLOCKING
+                    value: "1"
 
                   # DP/EP configuration in vLLM
                   - name: VLLM_USE_DEEP_GEMM
                     value: "1"
+                  # - name: VLLM_FLASHINFER_MOE_BACKEND
+                  #   value: latency
                   - name: VLLM_ALL2ALL_BACKEND
                     # value: "naive"
                     # value: "pplx"
                     # value: "deepep_high_throughput"
-                    value: "deepep_low_latency"
+                    value: deepep_low_latency
                   # Enabling the Cutlass kernels for attention improves decode perf by about 10%,
                   # but there is an intermittent hang that seems to be triggered by enabling this path.
+                  # Setting FLASHMLA disables CUTLASS_MLA in vLLM HEAD
                   # - name: VLLM_ATTENTION_BACKEND
-                  #   value: CUTLASS_MLA
+                  #   value: FLASHMLA
                   - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
                     value: "1"
                   - name: DP_SIZE
@@ -254,6 +271,10 @@ spec:
                   # Cache FlashInfer JIT into the ComputeCache mount as well
                   - name: FLASHINFER_WORKSPACE_BASE
                     value: /root/.nv/ComputeCache
+                  - name: TRITON_CACHE_DIR
+                    value: /root/.nv/ComputeCache/.triton
+                  - name: DG_JIT_CACHE_DIR
+                    value: /root/.nv/ComputeCache/.deepgemm
                   - name: HF_HUB_CACHE
                     value: /huggingface-cache
                   - name: HF_TOKEN
@@ -274,6 +295,21 @@ spec:
                     value: "128"
                   - name: TORCH_CUDA_ARCH_LIST
                     value: "9.0a 10.0"
+
+                terminationMessagePolicy: FallbackToLogsOnError
+                lifecycle:
+                  preStop:
+                    sleep:
+                      seconds: 1
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: http
+                    scheme: HTTP
+                  periodSeconds: 1
+                  successThreshold: 1
+                  failureThreshold: 1
+                  timeoutSeconds: 1
 
                 # may not be needed on GKE
                 securityContext:
@@ -328,7 +364,7 @@ spec:
                     networking.gke.io.networks/rdma-7: "1"
                     networking.gke.io.networks/rdma-7.IP: "1"
                 volumeMounts:
-                  - name: dshm
+                  - name: shm
                     mountPath: /dev/shm
                   - name: init-scripts-volume
                     mountPath: /init-scripts
@@ -349,7 +385,7 @@ spec:
                     defaultMode: 0755 # Set execute permissions for the script
                     optional: true
                 # Needed for NCCL to function
-                - name: dshm
+                - name: shm
                   emptyDir:
                     medium: Memory
                     sizeLimit: 1Gi
