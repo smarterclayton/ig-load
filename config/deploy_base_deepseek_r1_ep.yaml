@@ -269,6 +269,8 @@ spec:
                         fieldPath: status.podIP
 
                   # Cache FlashInfer JIT into the ComputeCache mount as well
+                  - name: VLLM_CACHE_ROOT
+                    value: /root/.nv/ComputeCache/.vllm
                   - name: FLASHINFER_WORKSPACE_BASE
                     value: /root/.nv/ComputeCache
                   - name: TRITON_CACHE_DIR
