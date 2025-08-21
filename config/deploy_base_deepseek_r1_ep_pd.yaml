@@ -1,7 +1,7 @@
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-    name: vllm-deepseek-r1-ep
+    name: vllm-deepseek-r1-ep-pd
 spec:
     replicas: 1
     leaderWorkerTemplate:
@@ -81,31 +81,28 @@ spec:
 
                     if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
                       #################
-                      # Leader-only launch
+                      # Prefill launch
                       #################
                       serve=(
-                      ${VLLM_HOME}/bin/vllm serve \
+                      env \
+                        VLLM_ALL2ALL_BACKEND=deepep_high_throughput \
+                        ${VLLM_HOME}/bin/vllm serve \
                         deepseek-ai/DeepSeek-R1 \
                         --port 8000 \
                         --enforce-eager \
                         --disable-log-requests \
                         --enable-expert-parallel \
-                        --enable-eplb \
-                        --num-redundant-experts $DP_SIZE \
-                        --eplb-window-size 1000 \
-                        --eplb-step-interval 3000 \
-                        --eplb-log-balancedness \
-                        --tensor-parallel-size $TP_SIZE \
-                        --data-parallel-size $DP_SIZE \
+                        --tensor-parallel-size 1 \
+                        --data-parallel-size $DP_SIZE_LOCAL \
                         --data-parallel-size-local $DP_SIZE_LOCAL \
                         --data-parallel-address ${LWS_LEADER_ADDRESS} \
                         --data-parallel-rpc-port 5555 \
-                        --data-parallel-start-rank $START_RANK \
+                        --data-parallel-start-rank 0 \
                         --trust-remote-code
                       )
                     else
                       #################
-                      # Worker-only launch
+                      # Decode launch
                       #################
                       serve=(
                       ${VLLM_HOME}/bin/vllm serve \
@@ -114,17 +111,12 @@ spec:
                         --enforce-eager \
                         --disable-log-requests \
                         --enable-expert-parallel \
-                        --enable-eplb \
-                        --num-redundant-experts $DP_SIZE \
-                        --eplb-window-size 1000 \
-                        --eplb-step-interval 3000 \
-                        --eplb-log-balancedness \
-                        --tensor-parallel-size $TP_SIZE \
-                        --data-parallel-size $DP_SIZE \
+                        --tensor-parallel-size 1 \
+                        --data-parallel-size $DP_SIZE_LOCAL \
                         --data-parallel-size-local $DP_SIZE_LOCAL \
-                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
+                        --data-parallel-address localhost \
                         --data-parallel-rpc-port 5555 \
-                        --data-parallel-start-rank $START_RANK \
+                        --data-parallel-start-rank 0 \
                         --trust-remote-code \
                         --headless
                       )
@@ -166,7 +158,7 @@ spec:
                     done
                     echo
                     for script in "${components[@]}"; do
-                      echo "${script} $( git -C "/app/${script}" log --oneline HEAD^..HEAD || echo "unknown" )"
+                      echo "${script} $( git -C "/app/${script}" log --oneline -1 2>&1 || true )"
                     done
                     echo
 
@@ -397,6 +389,7 @@ spec:
                   # Required to access the gIB configuration for NCCL
                   - mountPath: /usr/local/gib
                     name: gib
+
               volumes:
                 # Volume for the init script from ConfigMap
                 - name: init-scripts-volume
@@ -425,3 +418,18 @@ spec:
                   hostPath:
                     path: /home/kubernetes/bin/gib
                     type: ""
+
+              initContainers:
+              - args:
+                - --port=8200
+                - --vllm-port=8000
+                - --connector=nixlv2
+                - -v=1
+                - --secure-proxy=false
+                image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.2.0
+                imagePullPolicy: Always
+                name: sidecar
+                ports:
+                - containerPort: 8001
+                  protocol: TCP
+                restartPolicy: Always
