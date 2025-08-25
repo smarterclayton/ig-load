@@ -85,7 +85,7 @@ spec:
                       #################
                       serve=(
                       ${VLLM_HOME}/bin/vllm serve \
-                        deepseek-ai/DeepSeek-R1 \
+                        ${VLLM_MODEL} \
                         --port 8000 \
                         #--enforce-eager \
                         --disable-log-requests \
@@ -109,7 +109,7 @@ spec:
                       #################
                       serve=(
                       ${VLLM_HOME}/bin/vllm serve \
-                        deepseek-ai/DeepSeek-R1 \
+                        ${VLLM_MODEL} \
                         --port 8000 \
                         #--enforce-eager \
                         --disable-log-requests \
@@ -132,23 +132,26 @@ spec:
 
                     # Run a benchmark that is decode-only
                     function bench_decode {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
                     }
                     # Run a benchmark that is prefill-only
                     function bench_prefill {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
                     }
                     # Run a benchmark with mixed prefill and decode
                     function bench_mixed {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-100} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-512}
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-100} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
                     }
                     # Start Qwen3 for a faster and simpler MoE test harness
                     function serve_simple {
-                      ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port 8000 --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+                      ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
                     }
                     # Execute DeepEP's internode latency and tuning test
                     function test_internode {
                       VIRTUAL_ENV=/app/venv WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) uv run /app/DeepEP/tests/test_internode.py
+                    }
+                    function collect_vllm_env {
+                      wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
                     }
                     EOF
 
@@ -251,6 +254,14 @@ spec:
                     value: "1"
                   #- name: CUDA_LAUNCH_BLOCKING
                   #  value: "1"
+
+                  # DP/EP configuration in vLLM
+                  - name: VLLM_MODEL
+                    # value: "deepseek-ai/DeepSeek-R1"
+                    value: "nvidia/DeepSeek-R1-FP4"
+                  # Model specific config
+                  - name: VLLM_USE_FLASHINFER_MOE_FP4
+                    value: "1"
 
                   # DP/EP configuration in vLLM
                   - name: VLLM_USE_DEEP_GEMM

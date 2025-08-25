@@ -78,25 +78,28 @@ spec:
                     export NCCL_NET_PLUGIN=/usr/local/gib/lib64/libnccl-net_internal.so
                     export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
-                    if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
+                    if [ "${LWS_WORKER_INDEX:-0}" -ne 0 ]; then
                       #################
                       # Prefill launch
                       #################
                       serve=(
                       env \
-                        VLLM_ALL2ALL_BACKEND=deepep_high_throughput \
+                        env VLLM_ALL2ALL_BACKEND=deepep_high_throughput \
                         ${VLLM_HOME}/bin/vllm serve \
                         deepseek-ai/DeepSeek-R1 \
                         --port 8000 \
                         #--enforce-eager \
                         --disable-log-requests \
+                        --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
+                        --disable-log-stats \
                         --enable-expert-parallel \
                         --tensor-parallel-size 1 \
                         --data-parallel-size $DP_SIZE_LOCAL \
                         --data-parallel-size-local $DP_SIZE_LOCAL \
-                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
+                        --data-parallel-address localhost \
                         --data-parallel-rpc-port 5555 \
                         --data-parallel-start-rank 0 \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}' \
                         --trust-remote-code
                       )
                     else
@@ -109,6 +112,8 @@ spec:
                         --port 8000 \
                         #--enforce-eager \
                         --disable-log-requests \
+                        --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
+                        --disable-log-stats \
                         --enable-expert-parallel \
                         --tensor-parallel-size 1 \
                         --data-parallel-size $DP_SIZE_LOCAL \
@@ -116,29 +121,39 @@ spec:
                         --data-parallel-address localhost \
                         --data-parallel-rpc-port 5555 \
                         --data-parallel-start-rank 0 \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}' \
                         --trust-remote-code
                       )
                     fi
 
                     # Run a benchmark that is decode-only
                     function bench_decode {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
                     }
                     # Run a benchmark that is prefill-only
                     function bench_prefill {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
                     }
                     # Run a benchmark with mixed prefill and decode
                     function bench_mixed {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:8000 --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-100} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-512}
+                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model deepseek-ai/DeepSeek-R1 --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-100} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
                     }
                     # Start Qwen3 for a faster and simpler MoE test harness
                     function serve_simple {
-                      ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port 8000 --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+                      ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
                     }
                     # Execute DeepEP's internode latency and tuning test
                     function test_internode {
                       VIRTUAL_ENV=/app/venv WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) uv run /app/DeepEP/tests/test_internode.py
+                    }
+                    function req_disagg {
+                      curl -i localhost:8200/v1/completions \
+                        -H "x-prefiller-host-port: ${LWS_LEADER_ADDRESS/$HOSTNAME/$HOSTNAME-1}:${PORT:-8000}" \
+                        -H 'Content-Type: application/json' -d \
+                        '{"temperature": 0,"prompt": "Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don''t forget to provide personal anecdotes.\n\n: San Francisco","max_tokens": 10,"model": "deepseek-ai/DeepSeek-R1"}'
+                    }
+                    function collect_vllm_env {
+                      wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
                     }
                     EOF
 
@@ -253,8 +268,8 @@ spec:
                   # Enabling the Cutlass kernels for attention improves decode perf by about 10%,
                   # but there is an intermittent hang that seems to be triggered by enabling this path.
                   # Setting FLASHMLA disables CUTLASS_MLA in vLLM HEAD
-                  - name: VLLM_ATTENTION_BACKEND
-                    value: FLASHMLA
+                  #- name: VLLM_ATTENTION_BACKEND
+                  #  value: FLASHMLA
                   - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
                     value: "1"
                   - name: DP_SIZE
@@ -271,6 +286,8 @@ spec:
                     valueFrom:
                       fieldRef:
                         fieldPath: status.podIP
+                  - name: VLLM_SPECULATIVE_CONFIG
+                    value: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
 
                   # Cache FlashInfer JIT into the ComputeCache mount as well
                   - name: VLLM_CACHE_ROOT
@@ -416,13 +433,13 @@ spec:
                 - --port=8200
                 - --vllm-port=8000
                 - --connector=nixlv2
-                - -v=1
+                - -v=5
                 - --secure-proxy=false
                 image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.2.0
                 imagePullPolicy: Always
                 name: sidecar
                 ports:
-                - containerPort: 8001
+                - containerPort: 8200
                   protocol: TCP
                 restartPolicy: Always
                 terminationMessagePolicy: FallbackToLogsOnError
