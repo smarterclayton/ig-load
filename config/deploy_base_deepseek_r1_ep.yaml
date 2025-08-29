@@ -27,8 +27,7 @@ spec:
             spec:
               containers:
               - name: vllm-worker
-                # Use the nvshmem_3320 tag to try 3.3.20
-                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:nvshmem_339
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:torch_28_20250910
                 imagePullPolicy: Always
                 workingDir: /code
                 stdin: true
@@ -39,7 +38,7 @@ spec:
                     set -euo pipefail
 
                     if [[ -n "${DROP_KERNEL_CACHE}" ]]; then
-                      rm -rf /root/.nv/ComputeCache/*
+                      rm -rf /root/.nv/ComputeCache/*???*
                     fi
 
                     # Debugging tools for the environment, libnl required for set_nccl_env.sh
@@ -72,13 +71,11 @@ spec:
                       export HF_HUB_OFFLINE=0
                     fi
 
-                    # Configure gIB
+                    # Configure gIB (assuming v1.10 because of NCCL 2.27 for vLLM main)
                     export PATH=/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
                     source /usr/local/gib/scripts/set_nccl_env.sh
-                    unset NCCL_NET
-                    export NCCL_NET_PLUGIN=/usr/local/gib/lib64/libnccl-net_internal.so
-                    export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
+                    export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
                     if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
                       #################
                       # Leader-only launch
@@ -90,11 +87,11 @@ spec:
                         #--enforce-eager \
                         --disable-log-requests \
                         --enable-expert-parallel \
-                        #--enable-eplb \
-                        #--num-redundant-experts $DP_SIZE \
-                        #--eplb-window-size 1000 \
-                        #--eplb-step-interval 3000 \
-                        #--eplb-log-balancedness \
+                        --enable-eplb \
+                        --num-redundant-experts $DP_SIZE \
+                        --eplb-window-size 1000 \
+                        --eplb-step-interval 3000 \
+                        --eplb-log-balancedness \
                         --tensor-parallel-size $TP_SIZE \
                         --data-parallel-size $DP_SIZE \
                         --data-parallel-size-local $DP_SIZE_LOCAL \
@@ -114,11 +111,11 @@ spec:
                         #--enforce-eager \
                         --disable-log-requests \
                         --enable-expert-parallel \
-                        #--enable-eplb \
-                        #--num-redundant-experts $DP_SIZE \
-                        #--eplb-window-size 1000 \
-                        #--eplb-step-interval 3000 \
-                        #--eplb-log-balancedness \
+                        --enable-eplb \
+                        --num-redundant-experts $DP_SIZE \
+                        --eplb-window-size 1000 \
+                        --eplb-step-interval 3000 \
+                        --eplb-log-balancedness \
                         --tensor-parallel-size $TP_SIZE \
                         --data-parallel-size $DP_SIZE \
                         --data-parallel-size-local $DP_SIZE_LOCAL \
@@ -132,27 +129,41 @@ spec:
 
                     # Run a benchmark that is decode-only
                     function bench_decode {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
+                      if [[ -n "${DISAGG}" ]]; then PORT=8200; headers=" --header x-prefiller-host-port=${LWS_LEADER_ADDRESS/$HOSTNAME/$HOSTNAME-1}:8000 "; fi
+                      VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))}
                     }
                     # Run a benchmark that is prefill-only
                     function bench_prefill {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
+                      if [[ -n "${DISAGG}" ]]; then PORT=8200; headers=" --header x-prefiller-host-port=${LWS_LEADER_ADDRESS/$HOSTNAME/$HOSTNAME-1}:8000 "; fi
+                      VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
                     }
                     # Run a benchmark with mixed prefill and decode
                     function bench_mixed {
-                      VIRTUAL_ENV=/app/venv uv run /app/vllm/benchmarks/benchmark_serving.py --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-100} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
+                      if [[ -n "${DISAGG}" ]]; then PORT=8200; headers=" --header x-prefiller-host-port=${LWS_LEADER_ADDRESS/$HOSTNAME/$HOSTNAME-1}:8000 "; fi
+                      VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${LWS_LEADER_ADDRESS}:${PORT:-8000} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1000} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))}
                     }
                     # Start Qwen3 for a faster and simpler MoE test harness
                     function serve_simple {
                       ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
                     }
+                    function req_complete {
+                      curl -i http://${LWS_LEADER_ADDRESS}:${PORT:-8000}/v1/completions -H 'Content-Type: application/json' -d "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}"
+                    }
                     # Execute DeepEP's internode latency and tuning test
                     function test_internode {
                       VIRTUAL_ENV=/app/venv WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) uv run /app/DeepEP/tests/test_internode.py
                     }
+                    function req_disagg {
+                      curl -i localhost:8200/v1/completions \
+                        -H "x-prefiller-host-port: ${LWS_LEADER_ADDRESS/$HOSTNAME/$HOSTNAME-1}:${PORT:-8000}" \
+                        -H 'Content-Type: application/json' -d \
+                        '{"temperature": 0,"prompt": "Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don''t forget to provide personal anecdotes.\n\n: San Francisco","max_tokens": 10,"model": "${VLLM_MODEL}"}'
+                    }
                     function collect_vllm_env {
                       wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
                     }
+
+                    set +e
                     EOF
 
                     #######################################################
@@ -218,9 +229,9 @@ spec:
                   #  value: "main"
                   #- name: FLASHINFER_COMMIT
                   #  value: "dd9a333412ab15680affe6a949a60ea911295a2a" # v0.2.12, works with 4d9c61993ac4209c97b3afef237b2387f2cd9b97
-                  # Force use of precompiled binaries for now, use of nvcc 12.9 may be breaking builds
-                  - name: VLLM_USE_PRECOMPILED
-                    value: "1"
+                  # Force builds until vLLM precompiled catches up to https://github.com/vllm-project/vllm/issues/24513#issuecomment-3271154593
+                  # - name: VLLM_USE_PRECOMPILED
+                  #   value: "0"
 
                   # Networking config
                   - name: NVSHMEM_REMOTE_TRANSPORT
@@ -234,10 +245,19 @@ spec:
                     value: "eth0"
                   - name: GLOO_SOCKET_IFNAME
                     value: "eth0"
+                  # Force use of TCP for NIXL disaggregation
+                  #- name: UCX_TLS
+                  #  value: "tcp,cuda_copy"
+                  #- name: UCX_NET_DEVICES
+                  #  value: "eth0"
 
                   # Debugging info
                   - name: UCX_LOG_LEVEL
                     value: "debug"
+                  - name: UCX_HANDLE_ERRORS
+                    value: "freeze"
+                  - name: UCX_ERROR_SIGNALS
+                    value: "SIGSEGV"
                   - name: NVSHMEM_INFO
                     value: "true"
                   - name: NVSHMEM_DEBUG
@@ -252,16 +272,16 @@ spec:
                     value: "DEBUG"
                   - name: HF_HUB_DISABLE_PROGRESS_BARS
                     value: "1"
-                  #- name: CUDA_LAUNCH_BLOCKING
+                  # - name: CUDA_LAUNCH_BLOCKING
                   #  value: "1"
 
                   # DP/EP configuration in vLLM
                   - name: VLLM_MODEL
-                    # value: "deepseek-ai/DeepSeek-R1"
-                    value: "nvidia/DeepSeek-R1-FP4"
+                    value: "deepseek-ai/DeepSeek-R1"
+                    #value: "nvidia/DeepSeek-R1-FP4"
                   # Model specific config
-                  - name: VLLM_USE_FLASHINFER_MOE_FP4
-                    value: "1"
+                  #- name: VLLM_USE_FLASHINFER_MOE_FP4
+                  #  value: "1"
 
                   # DP/EP configuration in vLLM
                   - name: VLLM_USE_DEEP_GEMM
@@ -271,11 +291,11 @@ spec:
                     # value: "pplx"
                     # value: "deepep_high_throughput"
                     value: deepep_low_latency
-                  # Enabling the Cutlass kernels for attention improves decode perf by about 10%,
-                  # but there is an intermittent hang that seems to be triggered by enabling this path.
-                  # Setting FLASHMLA disables CUTLASS_MLA in vLLM HEAD
                   - name: VLLM_ATTENTION_BACKEND
-                    value: FLASHMLA
+                    value: CUTLASS_MLA
+                  # Avoid known hangs with CUTLASS_MLA on B200
+                  - name: FORCE_NUM_KV_SPLITS
+                    value: "1"
                   - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
                     value: "1"
                   - name: DP_SIZE
@@ -293,7 +313,13 @@ spec:
                       fieldRef:
                         fieldPath: status.podIP
 
-                  # Cache FlashInfer JIT into the ComputeCache mount as well
+                  # Until gIB path takes precedence in Dockerfile
+                  - name: LD_LIBRARY_PATH
+                    value: /usr/local/nvshmem/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/opt/ucx/lib:/usr/local/lib:/usr/local/gib/lib64:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+
+                  # Cache directories
+                  - name: CCACHE_DIR
+                    value: /root/.nv/ComputeCache/.ccache
                   - name: VLLM_CACHE_ROOT
                     value: /root/.nv/ComputeCache/.vllm
                   - name: FLASHINFER_WORKSPACE_BASE
@@ -413,7 +439,7 @@ spec:
                 - name: shm
                   emptyDir:
                     medium: Memory
-                    sizeLimit: 1Gi
+                    sizeLimit: 2Gi
                 # Use a durable hf cache on the SSD to avoid redownloading large models
                 - name: hf-cache
                   hostPath:
@@ -436,13 +462,13 @@ spec:
                 - --port=8200
                 - --vllm-port=8000
                 - --connector=nixlv2
-                - -v=1
+                - -v=5
                 - --secure-proxy=false
                 image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.2.0
                 imagePullPolicy: Always
                 name: sidecar
                 ports:
-                - containerPort: 8001
+                - containerPort: 8200
                   protocol: TCP
                 restartPolicy: Always
                 terminationMessagePolicy: FallbackToLogsOnError
