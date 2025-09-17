@@ -27,7 +27,7 @@ spec:
             spec:
               containers:
               - name: vllm-worker
-                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main_20250918
                 imagePullPolicy: Always
                 workingDir: /code
                 stdin: true
@@ -87,6 +87,7 @@ spec:
                         --max-model-len 131072 \
                         --disable-log-requests \
                         --enable-expert-parallel \
+                        --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
                         --eplb-window-size 1000 \
@@ -111,6 +112,7 @@ spec:
                         --max-model-len 131072 \
                         --disable-log-requests \
                         --enable-expert-parallel \
+                        --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
                         --eplb-window-size 1000 \
@@ -123,7 +125,7 @@ spec:
                         --data-parallel-rpc-port 5555 \
                         --data-parallel-start-rank $START_RANK \
                         --trust-remote-code \
-                        --headless 
+                        --headless
                       )
                     fi
                     eval "serve+=( ${VLLM_DEBUG_ARGS:-} )"
@@ -173,7 +175,8 @@ spec:
                     components=( deepep deepgemm flashinfer vllm )
                     for script in "${components[@]}"; do
                       branch="${script^^}_BRANCH"
-                      if [[ -z "${!branch-}" ]]; then
+                      force="${script^^}_INSTALL"
+                      if [[ -z "${!branch-}" && -z "${!force-}" ]]; then
                         continue
                       fi
                       for location in /init-scripts /install-scripts; do
