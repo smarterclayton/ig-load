@@ -314,7 +314,7 @@ spec:
                   - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
                     value: "1"
                   - name: VLLM_SPECULATIVE_CONFIG
-                    value: "" #'{"method":"deepseek_mtp","num_speculative_tokens":1}'
+                    value: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
 
                   # Use cache directories from the host Cache directories
                   - name: CCACHE_DIR
