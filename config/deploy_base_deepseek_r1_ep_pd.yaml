@@ -27,7 +27,7 @@ spec:
             spec:
               containers:
               - name: vllm-worker
-                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:v0.10.2
+                image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main
                 imagePullPolicy: Always
                 workingDir: /code
                 stdin: true
