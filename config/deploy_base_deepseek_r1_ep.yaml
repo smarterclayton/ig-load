@@ -86,8 +86,10 @@ spec:
                         --port 8000 \
                         --max-model-len 131072 \
                         --disable-log-requests \
-                        --enable-expert-parallel \
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
+                        --enable-dbo \
+                        -O.cudagraph_mode=FULL_AND_PIECEWISE \
+                        --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
                         --eplb-window-size 1000 \
@@ -111,8 +113,10 @@ spec:
                         --port 8000 \
                         --max-model-len 131072 \
                         --disable-log-requests \
-                        --enable-expert-parallel \
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
+                        --enable-dbo \
+                        -O.cudagraph_mode=FULL_AND_PIECEWISE \
+                        --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
                         --eplb-window-size 1000 \
@@ -212,10 +216,10 @@ spec:
                     value: ""
 
                   # Uncomment to force vLLM to build at a specific point
-                  # - name: VLLM_REPO_URL
-                  #   value: "https://github.com/vllm-project/vllm.git"
-                  # - name: VLLM_BRANCH
-                  #   value: "main"
+                  - name: VLLM_REPO_URL
+                    value: "https://github.com/vllm-project/vllm.git"
+                  - name: VLLM_BRANCH
+                    value: "main"
                   # - name: VLLM_COMMIT
                   #   value: ""
                   # Set to 1 when running from a build significantly older than vLLM HEAD, as
@@ -435,7 +439,7 @@ spec:
                   emptyDir:
                     medium: Memory
                     # Verified that we need about 2Gi to start on NCCL 2.27
-                    sizeLimit: 2Gi
+                    sizeLimit: 3Gi
                 # Use a cache directory across pods on the SSD to avoid redownloading large models
                 - name: hf-cache
                   hostPath:

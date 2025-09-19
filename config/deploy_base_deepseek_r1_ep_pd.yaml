@@ -91,6 +91,7 @@ spec:
                         # crash / memory access error on prefill without this
                         --max-model-len 131072 \
                         --disable-log-requests \
+                        --enable-dbo \
                         --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts 0 \
@@ -117,6 +118,8 @@ spec:
                         --max-model-len 131072 \
                         --disable-log-requests \
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
+                        --enable-dbo \
+                        -O.cudagraph_mode=FULL_DECODE_ONLY \
                         --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE_LOCAL \
@@ -216,16 +219,16 @@ spec:
                     value: ""
 
                   # Uncomment to force vLLM to build at a specific point
-                  # - name: VLLM_REPO_URL
-                  #   value: "https://github.com/vllm-project/vllm.git"
-                  # - name: VLLM_BRANCH
-                  #   value: "main"
+                  - name: VLLM_REPO_URL
+                    value: "https://github.com/neuralmagic/vllm.git"
+                  - name: VLLM_BRANCH
+                    value: "lwilkinson/dbo-prefill"
                   # - name: VLLM_COMMIT
                   #   value: ""
                   # Set to 1 when running from a build significantly older than vLLM HEAD, as
                   # the vLLM kernels may not be compatible with latest
-                  # - name: VLLM_USE_PRECOMPILED
-                  #   value: "0"
+                  - name: VLLM_USE_PRECOMPILED
+                    value: "1"
                   # When building packages at runtime, ensure we are compiled for hopper and blackwell
                   - name: TORCH_CUDA_ARCH_LIST
                     value: "9.0a 10.0"
@@ -439,7 +442,7 @@ spec:
                   emptyDir:
                     medium: Memory
                     # Verified that we need about 2Gi to start on NCCL 2.27
-                    sizeLimit: 2Gi
+                    sizeLimit: 3Gi
                 # Use a cache directory across pods on the SSD to avoid redownloading large models
                 - name: hf-cache
                   hostPath:
