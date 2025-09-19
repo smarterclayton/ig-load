@@ -1,7 +1,7 @@
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-    name: vllm-deepseek-r1-ep-pd
+    name: vllm-deepseek-ep-pd
 spec:
     replicas: 1
     leaderWorkerTemplate:
@@ -9,6 +9,9 @@ spec:
         restartPolicy: None #RecreateGroupOnPodRestart
 
         workerTemplate:
+            labels:
+              app: vllm-deepseek-ep
+              server: vllm
             metadata:
               annotations:
                 networking.gke.io/default-interface: 'eth0'
@@ -91,7 +94,6 @@ spec:
                         # crash / memory access error on prefill without this
                         --max-model-len 131072 \
                         --disable-log-requests \
-                        --enable-dbo \
                         --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts 0 \
@@ -118,7 +120,6 @@ spec:
                         --max-model-len 131072 \
                         --disable-log-requests \
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
-                        --enable-dbo \
                         -O.cudagraph_mode=FULL_DECODE_ONLY \
                         --enable-expert-parallel \
                         --enable-eplb \

@@ -5,7 +5,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: my-pool
+      server: vllm
   endpoints:
   - port: 8000
     interval: 30s
