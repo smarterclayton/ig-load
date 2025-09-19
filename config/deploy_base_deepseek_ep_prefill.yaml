@@ -1,7 +1,7 @@
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-    name: vllm-deepseek-ep-decode
+    name: vllm-deepseek-ep-prefill
 spec:
     replicas: 1
     leaderWorkerTemplate:
@@ -88,7 +88,6 @@ spec:
                         --disable-log-requests \
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
                         --enable-dbo \
-                        -O.cudagraph_mode=FULL_AND_PIECEWISE \
                         --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
@@ -116,7 +115,6 @@ spec:
                         --disable-log-requests \
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
                         --enable-dbo \
-                        -O.cudagraph_mode=FULL_AND_PIECEWISE \
                         --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
@@ -129,8 +127,8 @@ spec:
                         --data-parallel-address ${LWS_LEADER_ADDRESS} \
                         --data-parallel-rpc-port 5555 \
                         --data-parallel-start-rank $START_RANK \
-                        --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}' \
                         --trust-remote-code \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}' \
                         --headless
                       )
                     fi
@@ -306,8 +304,8 @@ spec:
                   - name: VLLM_ALL2ALL_BACKEND
                     # value: "naive"
                     # value: "pplx"
-                    # value: "deepep_high_throughput"
-                    value: deepep_low_latency
+                    value: "deepep_high_throughput"
+                    # value: deepep_low_latency
                   - name: VLLM_ATTENTION_BACKEND
                     value: CUTLASS_MLA
                   # Avoid known hangs with CUTLASS_MLA on B200 by forcing splits to be 1
