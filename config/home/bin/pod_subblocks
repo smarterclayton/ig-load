@@ -1,0 +1,3 @@
+join -1 7 -2 1 \
+    <(kubectl get pods -o wide "$@" | sort -b -k 7) \
+    <(kubectl get nodes -o 'go-template={{ range .items }}{{ .metadata.name }} {{ with index .metadata.labels "cloud.google.com/gce-topology-subblock" }}{{ . }}{{ else }}{{ "none" }}{{ end }}{{ "\n" }}{{ end }}' --no-headers | sort -b)

@@ -8,4 +8,19 @@ spec:
       server: vllm
   endpoints:
   - port: 8000
-    interval: 30s
+    interval: 10s
+  targetLabels:
+    fromPod:
+    - from: app
+    - from: component
+    - from: llm-d.ai/role
+      to: role
+    - from: apps.kubernetes.io/pod-index
+      to: pod_index
+    metadata:
+    - pod
+    - container
+    - node
+    #- namespace
+    - top_level_controller_name
+    - top_level_controller_type
