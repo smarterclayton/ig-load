@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Nodes with GCP subblocks
+# kubectl get nodes -o "custom-columns=NAME:.metadata.name,TAINTS:{.spec.taints[*].key},SUBBLOCK:.metadata.labels.cloud\.google\.com\/gce-topology-subblock"
+
+read -r -d '' VAR <<'EOF'
+{{ range .items 
+    }}{{ 
+    if (
+        and
+            .spec.nodeName
+            (eq .status.phase "Running")
+            (index .spec.containers)
+            (index .spec.containers 0)
+            (index .spec.containers 0 "resources")
+            (index .spec.containers 0 "resources" "requests")
+            (index .spec.containers 0 "resources" "requests" "nvidia.com/gpu")
+            (gt (len (index .spec.containers 0 "resources" "requests" "nvidia.com/gpu")) 0)
+    ) 
+        }}{{ .metadata.name }} {{ .metadata.namespace }} {{ .spec.nodeName }}{{ "\n" 
+    }}{{ end }}{{ 
+end }}
+EOF
+
+join -1 1 -2 1 \
+    <(comm -13 <(kubectl get pods -A -o "go-template=${VAR}" | cut -d ' ' -f 3 | sort -ub) <(kubectl get nodes -l cloud.google.com/gce-topology-subblock -o custom-columns=NAME:metadata.name --no-headers | sort -b)) \
+    <(kubectl get nodes -o "custom-columns=NAME:.metadata.name,SUBBLOCK:.metadata.labels.cloud\.google\.com\/gce-topology-subblock,TAINTS:{.spec.taints[*].key}" --no-headers | sort -b) \
+    | sort -k 2
