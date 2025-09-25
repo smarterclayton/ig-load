@@ -1,0 +1,48 @@
+# Importable cloud builders
+---
+build:
+  images:
+  - gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/llm-d-routing-sidecar:$BRANCH_NAME
+  options:
+    logging: CLOUD_LOGGING_ONLY
+    pool:
+      name: projects/claytoncoleman-gke-dev/locations/us-central1/workerPools/pool-1
+  steps:
+  - args:
+    - build
+    - -t
+    - gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/llm-d-routing-sidecar:$BRANCH_NAME
+    - .
+    name: gcr.io/cloud-builders/docker
+github:
+  name: llm-d-routing-sidecar
+  owner: smarterclayton
+  push:
+    branch: .*
+name: llm-d-routing-sidecar
+serviceAccount: projects/-/serviceAccounts/github-cloud-builder@claytoncoleman-gke-dev.iam.gserviceaccount.com
+---
+build:
+  images:
+  - gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:$BRANCH_NAME
+  options:
+    logging: CLOUD_LOGGING_ONLY
+    pool:
+      name: projects/claytoncoleman-gke-dev/locations/us-central1/workerPools/pool-1
+  steps:
+  - args:
+    - build
+    - -t
+    - gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:$BRANCH_NAME
+    - -f
+    - Dockerfile
+    - .
+    name: gcr.io/cloud-builders/docker
+  timeout: 12000s
+name: vllm-dp-lws
+repositoryEventConfig:
+  push:
+    branch: .*
+  repository: projects/claytoncoleman-gke-dev/locations/us-central1/connections/smarterclayton/repositories/smarterclayton-vllm-dp-lws
+  repositoryType: GITHUB
+serviceAccount: projects/claytoncoleman-gke-dev/serviceAccounts/github-cloud-builder@claytoncoleman-gke-dev.iam.gserviceaccount.com

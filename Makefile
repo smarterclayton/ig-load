@@ -24,3 +24,6 @@ down:
 
 hf_secret:
 	kubectl create secret generic hf-secret "--from-literal=HF_TOKEN=${HF_TOKEN}"
+
+sync_builders:
+	gcloud builds triggers import --project=claytoncoleman-gke-dev --region=us-central1 --source images/gke_cloud_builders.yaml
