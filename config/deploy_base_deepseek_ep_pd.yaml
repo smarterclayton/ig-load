@@ -472,6 +472,9 @@ spec:
                 - --connector=nixlv2
                 - -v=5
                 - --secure-proxy=false
+                env:
+                - name: ENABLE_PREFILLER_SAMPLING
+                  value: "1"
                 image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.2.0
                 imagePullPolicy: Always
                 name: sidecar
