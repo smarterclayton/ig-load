@@ -13,6 +13,8 @@ up:
 		--image=${LOAD_IMAGE} \
 		--restart=Always \
 		--image-pull-policy=Always \
+		--override-type=strategic \
+		'--overrides={"spec":{"containers":[{"name": "${LOAD_POD}", "securityContext": {"runAsUser": 0}}]}}' \
 		--command \
 		-- /bin/bash -c 'trap "" SIGCHLD; sleep infinity'
 

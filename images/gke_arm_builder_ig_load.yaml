@@ -1,0 +1,72 @@
+# Build on ARM since cloud build does not support ARM instance types yet
+#
+# $ gcloud container node-pools create --project claytoncoleman-gke-dev --region us-central1 --cluster demo arm-1 --enable-autoscaling --scopes=gke-default,storage-rw --location-policy=ANY --machine-type=c4a-standard-64 --total-max-nodes=2 --disk-size=1000GB --num-nodes=0 --image-type=UBUNTU_CONTAINERD
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: builder-arm-ig-load
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - command:
+        - /bin/bash
+        - -c
+        - |
+          #!/bin/bash
+          #trap "" SIGCHLD
+          set -e
+          dpkg --configure -a
+          apt-get -qq update
+          apt-get install -yqq curl
+          VERSION=2.1.29
+          OS=linux
+          ARCH=arm64
+          curl -fsSL "https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v${VERSION}/docker-credential-gcr_${OS}_${ARCH}-${VERSION}.tar.gz" \
+            | tar xz docker-credential-gcr
+          chmod +x docker-credential-gcr
+          cp docker-credential-gcr /root/usr/bin/
+          cat <<EOF | chroot /root /bin/bash
+            docker-credential-gcr configure-docker --registries=gcr.io --include-artifact-registry
+            cd ~
+            rm -rf ./${POD_NAME} || true
+            mkdir -p ./${POD_NAME} && cd ${POD_NAME}
+            git clone ${REPO} .
+            git checkout ${BRANCH}
+            docker build -t ${PUSH_REPO}:${PUSH_TAG:-${BRANCH}} .
+            docker push ${PUSH_REPO}:${PUSH_TAG:-${BRANCH}}
+          EOF
+        env:
+        - name: REPO
+          value: https://github.com/smarterclayton/ig-load.git
+        - name: BRANCH
+          value: main
+        - name: PUSH_REPO
+          value: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/ig-load
+        - name: PUSH_TAG
+          value: main-arm
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        image: ubuntu:22.04
+        name: builder
+        resources:
+          requests:
+            cpu: "8"
+            memory: 10Gi
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: root
+          mountPath: /root
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      volumes:
+      - name: root
+        hostPath:
+          type: Directory
+          path: /
