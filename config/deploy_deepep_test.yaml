@@ -14,7 +14,7 @@ spec:
     replicas: 1
     leaderWorkerTemplate:
         # change the size of the test in # of nodes with this value
-        size: 2
+        size: 4
         restartPolicy: None #RecreateGroupOnPodRestart
 
         workerTemplate:
@@ -75,7 +75,7 @@ spec:
                 - |
                   set -euo pipefail
 
-                  apt-get -qq update && apt-get install -y dnsutils python3.12-dbg gettext-base
+                  #apt-get -qq update && apt-get install -y dnsutils python3.12-dbg gettext-base
 
                   # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
                   cat <<'EOF' > ~/.bashrc
@@ -163,36 +163,27 @@ spec:
                 env:
                   - name: INTERACTIVE
                     value: ""
-                  - name: DISABLE_GCP_PATCH
-                    value: ""
-                  # Debugging logging (enable to see initialization details)
-                  - name: NVSHMEM_INFO
-                    #value: "true"
-                  - name: NVSHMEM_DEBUG
-                    #value: "INFO"
-                  - name: NVSHMEM_DEBUG_SUBSYS
-                    #value: "ALL"
 
-                  # - name: DEEPEP_BRANCH
-                  #   value: main
-                  # - name: DEEPEP_COMMIT
-                  #   value: 26cf250
+                  # Use a GCP specific patch to force NVSHMEM to choose the
+                  # NIC with the same index as the GPU for EP. Otherwise we
+                  # only use 4 of the 8 NICs.
+                  - name: DEEPEP_REPO_URL
+                    value: https://github.com/smarterclayton/DeepEP.git
+                  - name: DEEPEP_BRANCH
+                    value: nic_pe_alignment
 
                   # When building packages at runtime, ensure we are compiled for hopper and blackwell
                   - name: TORCH_CUDA_ARCH_LIST
                     value: "9.0a 10.0"
 
+                  # On GCP A3U and A4 machines, explicitly map GPUs by device id to NIC names
+                  - name: DEEP_EP_DEVICE_TO_HCA_MAPPING
+                    value: 0:mlx5_0:1,1:mlx5_1:1,2:mlx5_2:1,3:mlx5_3:1,4:mlx5_4:1,5:mlx5_5:1,6:mlx5_6:1,7:mlx5_7:1
                   # GCP RDMA Networking config
                   - name: NVSHMEM_REMOTE_TRANSPORT
                     value: "ibgda"
                   - name: NVSHMEM_IB_ENABLE_IBGDA
                     value: "true"
-                  # GCP pairs GPU NICs to PCIe bridges (https://cloud.google.com/compute/docs/gpus/gpu-network-bandwidth#h200-gpus),
-                  # which can lead to NVSHMEM's automatic distance assignment algorithm selecting NICs
-                  # inefficiently. Instead, instruct NVSHMEM to select the NIC that aligns to the
-                  # index of the GPU on the node.
-                  #- name: NVSHMEM_ENABLE_NIC_PE_MAPPING
-                  #  value: "1"
                   #- name: NVSHMEM_HCA_LIST
                   #  value: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
                   # We prefer to be GPU-initiated, and the GDRCopy mode requires a privileged device
@@ -202,6 +193,14 @@ spec:
                     value: "true"
                   - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
                     value: "eth0"
+
+                  # Debugging logging (enable to see initialization details)
+                  - name: NVSHMEM_INFO
+                    #value: "true"
+                  - name: NVSHMEM_DEBUG
+                    #value: "INFO"
+                  - name: NVSHMEM_DEBUG_SUBSYS
+                    #value: "ALL"
 
                   # Uncomment to identify where CPP calls are crashing
                   #- name: TORCH_SHOW_CPP_STACKTRACES
