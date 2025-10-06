@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: vllm-benchmark
+    annotations:
+spec:
+    replicas: 6
+    selector:
+      matchLabels:
+        app: vllm-benchmark
+    template:
+      metadata:
+        labels:
+          app: vllm-benchmark
+          llm-d.ai/role: benchmark
+      spec:
+        tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+
+        containers:
+        - name: vllm
+          image: gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:cpu
+          imagePullPolicy: Always
+          workingDir: /code
+          command:
+          - /bin/bash
+          - -c
+          - |
+            set -euo pipefail
+
+            # Debugging tools for the environment, libnl required for set_nccl_env.sh
+            if command -v apt-get >/dev/null 2>&1; then
+              # Using https://github.com/smarterclayton/vllm-dp-lws
+              # apt-get -qq update && apt-get install -y dnsutils # python3.12-dbg
+              true
+            #else
+              # Convert the llm-d image to be compatible with build environment
+              # dnf install -qy gdb strace
+              # curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin/" sh
+              # export VENV_PATH="/opt/vllm"
+              # export PYTHON="${VENV_PATH}/bin/python"
+              # export PATH="${VENV_PATH}/bin:${PATH}"
+              # export CUDA_MAJOR=12 CUDA_MINOR=9 CUDA_PATCH=1
+              # "${PYTHON}" -m ensurepip --upgrade
+              # "${PYTHON}" -m pip install -U pip wheel setuptools
+            fi
+
+            # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
+            cat <<'EOF' > ~/.bashrc
+            #!/bin/bash
+
+            # Shell conveniences
+            bind '"\e[A":history-search-backward'
+            bind '"\e[B":history-search-forward'
+            shopt -s histappend
+            export HISTFILESIZE=1000000
+            export HISTSIZE=1000000
+            export HISTCONTROL=ignoreboth
+            shopt -s cmdhist
+
+            # Ensure the container behaves consistently depending on which source image
+            if command -v apt-get >/dev/null 2>&1; then
+              export VLLM_HOME=/app/venv
+            else
+              # Assume we're using the RH midstream image
+              export VLLM_HOME=/opt/vllm
+            fi
+            export PATH=${VLLM_HOME}/bin:${PATH}:/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
+            export VIRTUAL_ENV=${VLLM_HOME}
+
+            # Define test scripts
+            export DEFAULT_HOST=vllm-deepseek-ep-decode
+            # Warmup the prefill server
+            function warmup_prefill {
+              TOKENS_IN=1000 TIMES=3 bench_prefill
+            }
+            # Run a benchmark against the decode servers
+            function bench_decode {
+              local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
+              local concurrency=${MAX_CONCURRENCY:-$(( DP_SIZE * 100 ))}
+              local prompts=${NUM_PROMPTS:-$(( concurrency * ${TIMES:-4} ))}
+              vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
+            }
+            # Run a benchmark against the prefill servers only
+            function bench_prefill {
+              MAX_CONCURRENCY=${MAX_CONCURRENCY:-$(( DP_SIZE * 5 / 2 ))} TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1} DEFAULT_HOST=vllm-deepseek-ep-prefill DISAGG=0 bench_decode
+            }
+            # Run a benchmark against the default configuration
+            function bench {
+              TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1000} DISAGG=1 bench_decode
+            }
+            function req {
+              unset prefiller; if [[ -n "${DISAGG-}" ]]; then prefiller="X-Prefiller-Host-Port: $( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk '{print $1 ":8000"}' | paste -sd ', ' -)"; fi
+              curl -i -H 'Content-Type: application/json' -H 'X-Request-Id: shell_req' -H "${prefiller-}" -d \
+                "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don't forget to provide personal anecdotes.\n\n: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}" "$@" \
+                "${HOST:-localhost}:${PORT:-8000}/v1/completions"
+            }
+            # Start Qwen3 for a faster and simpler MoE test harness
+            function serve_simple {
+              vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+            }
+            # Execute DeepEP's internode latency and tuning test
+            function test_internode {
+              env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
+                WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) \
+                uv run /app/deepep/tests/test_internode.py
+            }
+            # Use to verify if the node has low internal bandwidth
+            function test_intranode {
+              env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
+                uv run /app/deepep/tests/test_intranode.py
+            }
+            function collect_vllm_env {
+              wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
+            }
+            function print_stacks {
+              pgrep 'VLLM' | xargs -P8 -I {} gdb -p {} --batch --eval-command 'py-bt' | grep -v 'New LWP'
+            }
+            function print_cuda_stacks {
+              pgrep 'VLLM' | xargs -P8 -I {} cuda-gdb -p {} --batch --eval-command 'info cuda launch trace' | grep -v 'LWP'
+            }
+            function bench_decode_guide {
+              guidellm benchmark --target "http://${HOST:-${DEFAULT_HOST}}:${PORT:-8000}" \
+                --rate-type concurrent \
+                --max-requests "${NUM_PROMPTS:-$(( ${MAX_CONCURRENCY:-10} * 3))}" \
+                --rate "${MAX_CONCURRENCY:-10}" \
+                --data "{\"prompt_tokens\": ${TOKENS_IN:-1},
+                          \"output_tokens\": ${TOKENS_OUT:-100},
+                          \"output_tokens_stdev\": \"1\"}" \
+                --output-path "/tmp/out.json" \
+                --output-sampling 10
+            }
+
+            EOF
+
+            #######################################################
+            # INSTALL Dependencies that have a _BRANCH variable set
+            #######################################################
+            components=( vllm )
+            for script in "${components[@]}"; do
+              branch="${script^^}_BRANCH"
+              force="${script^^}_INSTALL"
+              if [[ -z "${!branch-}" && -z "${!force-}" ]]; then
+                continue
+              fi
+              for location in /init-scripts /install-scripts; do
+                if [[ -f ${location}/${script}.sh ]]; then
+                  ${location}/${script}.sh
+                  break
+                fi
+              done
+            done
+            echo
+            for script in "${components[@]}"; do
+              echo "${script} $( git -C "/app/${script}" log --oneline -1 2>&1 || true )"
+            done
+            echo
+
+            # Build and resolve the start command (allowing variables to be
+            # resolved in the container arguments)
+            source ~/.bashrc
+
+            #uv pip uninstall torch torchvision
+            #uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+            #VLLM_TARGET_DEVICE=cpu uv pip install /app/vllm --no-build-isolation
+
+            echo ready
+            while true; do
+              sleep 10 & wait
+            done
+          - ""
+          - vllm
+
+          env:
+          - name: VLLM_MODEL
+            value: "deepseek-ai/DeepSeek-V3.1"
+          - name: DP_SIZE
+            value: "16"
+          - name: VLLM_PLUGINS
+            value: "cpu"
+
+          terminationMessagePolicy: FallbackToLogsOnError
+
+          securityContext:
+            runAsUser: 0  # needed for RH image to be able to override files (runs as vllm)
+          resources:
+            requests:
+              cpu: 8
+              memory: 32Gi
