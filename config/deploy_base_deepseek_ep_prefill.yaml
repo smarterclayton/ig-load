@@ -69,213 +69,213 @@ spec:
                 workingDir: /code
                 stdin: true
                 tty: true
-                command: ["/bin/bash","-c"]
-                args:
-                  - |
-                    set -euo pipefail
+                command: 
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
 
-                    if [[ -n "${DROP_KERNEL_CACHE}" ]]; then
-                      find /root/.nv/ComputeCache/ -delete
+                  if [[ -n "${DROP_KERNEL_CACHE}" ]]; then
+                    find /root/.nv/ComputeCache -mindepth 1 -delete
+                  fi
+
+                  # Debugging tools for the environment, libnl required for set_nccl_env.sh
+                  if command -v apt-get >/dev/null 2>&1; then
+                    # Using https://github.com/smarterclayton/vllm-dp-lws
+                    apt-get -qq update && apt-get install -y dnsutils python3.12-dbg gettext-base
+                  else
+                    # Convert the llm-d image to be compatible with build environment
+                    dnf install -qy gdb gettext strace
+                    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin/" sh
+                    export VENV_PATH="/opt/vllm"
+                    export PYTHON="${VENV_PATH}/bin/python"
+                    export PATH="${VENV_PATH}/bin:${PATH}"
+                    "${PYTHON}" -m ensurepip --upgrade
+                    "${PYTHON}" -m pip install -U pip wheel setuptools
+                    export TORCH_CUDA_ARCH_LIST="9.0a;10.0+PTX"
+                  fi
+
+                  # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
+                  cat <<'EOF' > ~/.bashrc
+                  #!/bin/bash
+
+                  bind '"\e[A":history-search-backward'
+                  bind '"\e[B":history-search-forward'
+
+                  shopt -s histappend
+                  export HISTFILESIZE=1000000
+                  export HISTSIZE=1000000
+                  export HISTCONTROL=ignoreboth
+                  shopt -s cmdhist
+
+                  # Ensure the container behaves consistently depending on which source image
+                  if command -v apt-get >/dev/null 2>&1; then
+                    export VLLM_HOME=/app/venv
+                  else
+                    # Assume we're using the RH midstream image
+                    export VLLM_HOME=/opt/vllm
+                    export HF_HUB_OFFLINE=0
+                  fi
+                  export PATH=${VLLM_HOME}/bin:${PATH}
+
+                  # Configure gIB (assuming v1.10 because of NCCL 2.27 for vLLM main)
+                  export PATH=/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
+                  source /usr/local/gib/scripts/set_nccl_env.sh
+
+                  # Define dynamic start arguments from the leader worker set
+                  export DP_SIZE=${DP_SIZE:-$(( DP_DOMAIN_SIZE * DP_SIZE_LOCAL ))}
+                  export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+
+                  # Define test scripts
+                  HOST=vllm-deepseek-ep-decode
+                  # Run a benchmark that is decode-only
+                  function bench_decode {
+                    local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
+                    VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${HOST}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))} --ready-check-timeout-sec 0
+                  }
+                  # Run a benchmark that is prefill-only
+                  function bench_prefill {
+                    local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
+                    VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${HOST}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))} --ready-check-timeout-sec 0
+                  }
+                  # Run a benchmark with mixed prefill and decode
+                  function bench_mixed {
+                    local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
+                    VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${HOST}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1000} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))} --ready-check-timeout-sec 0
+                  }
+                  function req {
+                    unset prefiller; if [[ -n "${DISAGG-}" ]]; then prefiller="X-Prefiller-Host-Port: $( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk '{print $1 ":8000"}' | paste -sd ', ' -)"; fi
+                    curl -i -H 'Content-Type: application/json' -H 'X-Request-Id: shell_req' -H "${prefiller-}" -d \
+                      "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don't forget to provide personal anecdotes.\n\n: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}" "$@" \
+                      "${HOST}:${PORT:-8000}/v1/completions"
+                  }
+                  # Start Qwen3 for a faster and simpler MoE test harness
+                  function serve_simple {
+                    ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+                  }
+                  # Execute DeepEP's internode latency and tuning test
+                  function test_internode {
+                    env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
+                      WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) \
+                      VIRTUAL_ENV=/app/venv uv run /app/deepep/tests/test_internode.py
+                  }
+                  # Use to verify if the node has low internal bandwidth
+                  function test_intranode {
+                    env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
+                      VIRTUAL_ENV=/app/venv uv run /app/deepep/tests/test_intranode.py
+                  }
+                  function collect_vllm_env {
+                    wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
+                  }
+                  function print_stacks {
+                    pgrep 'VLLM' | xargs -P8 -I {} gdb -p {} --batch --eval-command 'py-bt' | grep -v 'New LWP'
+                  }
+                  function print_cuda_stacks {
+                    pgrep 'VLLM' | xargs -P8 -I {} cuda-gdb -p {} --batch --eval-command 'info cuda launch trace' | grep -v 'LWP'
+                  }
+                  function warmup {
+                    HOST=vllm-deepseek-ep-prefill TOKENS_OUT=1 MAX_CONCURRENCY=64 NUM_PROMPTS=640 bench_mixed
+                  }
+                  function bench_decode_guide {
+                    guidellm benchmark --target "http://${HOST}:${PORT:-8000}" \
+                      --rate-type concurrent \
+                      --max-requests "${NUM_PROMPTS:-$(( ${MAX_CONCURRENCY:-10} * 3))}" \
+                      --rate "${MAX_CONCURRENCY:-10}" \
+                      --data "{\"prompt_tokens\": ${TOKENS_IN:-1}, 
+                                \"output_tokens\": ${TOKENS_OUT:-100},
+                                \"output_tokens_stdev\": \"1\"}" \
+                      --output-path "/tmp/out.json" \
+                      --output-sampling 10
+                  }
+                  function profile_req {
+                      local addr=localhost
+                      curl "${addr}:${PORT:-8000}/start_profile" -X POST
+                      HOST=${addr} req & 
+                      sleep ${1:-3}
+                      curl "${addr}:${PORT:-8000}/stop_profile" -X POST
+                  }
+
+                  EOF
+
+                  #######################################################
+                  # INSTALL Dependencies that have a _BRANCH variable set
+                  #######################################################
+                  components=( deepep deepgemm flashinfer vllm )
+                  for script in "${components[@]}"; do
+                    branch="${script^^}_BRANCH"
+                    force="${script^^}_INSTALL"
+                    if [[ -z "${!branch-}" && -z "${!force-}" ]]; then
+                      continue
                     fi
-
-                    # Debugging tools for the environment, libnl required for set_nccl_env.sh
-                    if command -v apt-get >/dev/null 2>&1; then
-                      # Using https://github.com/smarterclayton/vllm-dp-lws/tree/working_branch
-                      apt-get install -y dnsutils python3.12-dbg
-                    else
-                      dnf install -qy gdb
-                      # dnf debuginfo-install -qy python3.12-3.12.9-1.el9_6.1.x86_64
-                    fi
-
-                    # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
-                    cat <<'EOF' > ~/.bashrc
-                    #!/bin/bash
-
-                    bind '"\e[A":history-search-backward'
-                    bind '"\e[B":history-search-forward'
-
-                    shopt -s histappend
-                    export HISTFILESIZE=1000000
-                    export HISTSIZE=1000000
-                    export HISTCONTROL=ignoreboth
-                    shopt -s cmdhist
-
-                    if command -v apt-get >/dev/null 2>&1; then
-                      export VLLM_HOME=/app/venv
-                    else
-                      # Assume we're using the RH midstream image
-                      export VLLM_HOME=/opt/vllm
-                      export HF_HUB_OFFLINE=0
-                    fi
-
-                    # Configure gIB (assuming v1.10 because of NCCL 2.27 for vLLM main)
-                    export PATH=/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
-                    source /usr/local/gib/scripts/set_nccl_env.sh
-
-                    export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
-                    if [ "${LWS_WORKER_INDEX:-0}" -eq 0 ]; then
-                      #################
-                      # Leader-only launch
-                      #################
-                      serve=(
-                      ${VLLM_HOME}/bin/vllm serve \
-                        ${VLLM_MODEL} \
-                        --port 8000 \
-                        --disable-log-requests \
-                        --data-parallel-hybrid-lb \
-                        --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
-                        --enable-dbo \
-                        --async-scheduling \
-                        --dbo-decode-token-threshold 32 \
-                        # try to keep 40GB free, https://github.com/vllm-project/vllm/issues/25597
-                        --kv-cache-memory=63000000000 \
-                        --enable-expert-parallel \
-                        --enable-eplb \
-                        --num-redundant-experts $DP_SIZE \
-                        --eplb-window-size 1000 \
-                        --eplb-step-interval 3000 \
-                        --tensor-parallel-size $TP_SIZE \
-                        --data-parallel-size $DP_SIZE \
-                        --data-parallel-size-local $DP_SIZE_LOCAL \
-                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
-                        --data-parallel-rpc-port 5555 \
-                        --data-parallel-start-rank $START_RANK \
-                        --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}' \
-                        --trust-remote-code
-                      )
-                    else
-                      #################
-                      # Worker-only launch
-                      #################
-                      serve=(
-                      ${VLLM_HOME}/bin/vllm serve \
-                        ${VLLM_MODEL} \
-                        --port 8000 \
-                        --disable-log-requests \
-                        --data-parallel-hybrid-lb \
-                        --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
-                        --enable-dbo \
-                        --async-scheduling \
-                        --dbo-decode-token-threshold 32 \
-                        # try to keep 40GB free, https://github.com/vllm-project/vllm/issues/25597
-                        --kv-cache-memory=63000000000 \
-                        --enable-expert-parallel \
-                        --enable-eplb \
-                        --num-redundant-experts $DP_SIZE \
-                        --eplb-window-size 1000 \
-                        --eplb-step-interval 3000 \
-                        --tensor-parallel-size $TP_SIZE \
-                        --data-parallel-size $DP_SIZE \
-                        --data-parallel-size-local $DP_SIZE_LOCAL \
-                        --data-parallel-address ${LWS_LEADER_ADDRESS} \
-                        --data-parallel-rpc-port 5555 \
-                        --data-parallel-start-rank $START_RANK \
-                        --trust-remote-code \
-                        --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
-                      )
-                    fi
-                    eval "serve+=( ${VLLM_DEBUG_ARGS:-} )"
-
-                    DEFAULT_BALANCER_HOST=vllm-deepseek-ep-decode
-                    # Run a benchmark that is decode-only
-                    function bench_decode {
-                      local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
-                      VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${DEFAULT_BALANCER_HOST}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-512} * 3))} --ready-check-timeout-sec 0
-                    }
-                    # Run a benchmark that is prefill-only
-                    function bench_prefill {
-                      local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
-                      VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${DEFAULT_BALANCER_HOST}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-10000} --random-output-len ${TOKENS_OUT:-1} --max-concurrency ${MAX_CONCURRENCY:-$((${DP_SIZE}*3))} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))} --ready-check-timeout-sec 0
-                    }
-                    # Run a benchmark with mixed prefill and decode
-                    function bench_mixed {
-                      local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
-                      VIRTUAL_ENV=/app/venv uv run /app/venv/bin/vllm bench serve ${headers:-} --base-url http://${DEFAULT_BALANCER_HOST}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-1000} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${MAX_CONCURRENCY:-512} --num-prompts ${NUM_PROMPTS:-$((${MAX_CONCURRENCY:-8} * 3))} --ready-check-timeout-sec 0
-                    }
-                    function req {
-                      unset prefiller; if [[ -n "${DISAGG-}" ]]; then prefiller="X-Prefiller-Host-Port: $( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk '{print $1 ":8000"}' | paste -sd ', ' -)"; fi
-                      curl -i -H 'Content-Type: application/json' -H 'X-Request-Id: shell_req' -H "${prefiller-}" -d \
-                        "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don't forget to provide personal anecdotes.\n\n: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}" "$@" \
-                        "${DEFAULT_BALANCER_HOST}:${PORT:-8000}/v1/completions"
-                    }
-                    # Start Qwen3 for a faster and simpler MoE test harness
-                    function serve_simple {
-                      ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
-                    }
-                    # Execute DeepEP's internode latency and tuning test
-                    function test_internode {
-                      env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
-                        WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) \
-                        VIRTUAL_ENV=/app/venv uv run /app/deepep/tests/test_internode.py
-                    }
-                    # Use to verify if the node has low internal bandwidth
-                    function test_intranode {
-                      env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
-                        VIRTUAL_ENV=/app/venv uv run /app/deepep/tests/test_intranode.py
-                    }
-                    function collect_vllm_env {
-                      wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
-                    }
-                    function print_stacks {
-                      pgrep 'VLLM' | xargs -P8 -I {} gdb -p {} --batch --eval-command 'py-bt' | grep -v 'New LWP'
-                    }
-                    function print_cuda_stacks {
-                      pgrep 'VLLM' | xargs -P8 -I {} cuda-gdb -p {} --batch --eval-command 'info cuda launch trace' | grep -v 'LWP'
-                    }
-                    function warmup {
-                      DEFAULT_BALANCER_HOST=vllm-deepseek-ep-prefill TOKENS_OUT=1 MAX_CONCURRENCY=50 NUM_PROMPTS=300 bench_mixed
-                    }
-                    function bench_decode_guide {
-                      guidellm benchmark --target "http://${DEFAULT_BALANCER_HOST}:${PORT:-8000}" \
-                        --rate-type concurrent \
-                        --max-requests "${NUM_PROMPTS:-$(( ${MAX_CONCURRENCY:-10} * 3))}" \
-                        --rate "${MAX_CONCURRENCY:-10}" \
-                        --data "{\"prompt_tokens\": ${TOKENS_IN:-1}, 
-                                  \"output_tokens\": ${TOKENS_OUT:-100},
-                                  \"output_tokens_stdev\": \"1\"}" \
-                        --output-path "/tmp/out.json" \
-                        --output-sampling 10
-                    }
-
-                    set +e
-                    EOF
-
-                    #######################################################
-                    # INSTALL Dependencies that have a _BRANCH variable set
-                    #######################################################
-                    components=( deepep deepgemm flashinfer vllm )
-                    for script in "${components[@]}"; do
-                      branch="${script^^}_BRANCH"
-                      force="${script^^}_INSTALL"
-                      if [[ -z "${!branch-}" && -z "${!force-}" ]]; then
-                        continue
+                    for location in /init-scripts /install-scripts; do
+                      if [[ -f ${location}/${script}.sh ]]; then
+                        ${location}/${script}.sh
+                        break
                       fi
-                      for location in /init-scripts /install-scripts; do
-                        if [[ -f ${location}/${script}.sh ]]; then
-                          ${location}/${script}.sh
-                          break
-                        fi
-                      done
                     done
-                    echo
-                    for script in "${components[@]}"; do
-                      echo "${script} $( git -C "/app/${script}" log --oneline -1 2>&1 || true )"
+                  done
+                  echo
+                  for script in "${components[@]}"; do
+                    echo "${script} $( git -C "/app/${script}" log --oneline -1 2>&1 || true )"
+                  done
+                  echo
+
+                  # Build and resolve the start command (allowing variables to be
+                  # resolved in the container arguments)
+                  source ~/.bashrc
+                  serve=()
+                  if [[ -n "${STRACE:-}" ]]; then
+                    serve+=( $( which strace ) ${STRACE} )
+                  fi
+                  serve+=( "$@" )
+                  for i in "${!serve[@]}"; do 
+                    serve[$i]=$( echo ${serve[$i]} | envsubst )
+                  done
+                  eval "serve+=( ${VLLM_DEBUG_ARGS:-} )"
+                  serve[0]=$( which "${serve[0]}" )
+                  declare -p serve >> ~/.bashrc
+                  env | sort
+
+                  # If set, hold the container before launch to allow debugging
+                  if [[ -n "${INTERACTIVE:-}" ]]; then
+                    echo "Waiting for /code/launch to run vLLM"
+                    while [[ ! -f /code/launch ]]; do
+                      sleep 10
                     done
-                    echo
+                    rm /code/launch
+                  fi
 
-                    # If set, hold the container before launch to allow debugging
-                    if [[ -n "${INTERACTIVE:-}" ]]; then
-                      echo "Waiting for /code/launch to run vLLM"
-                      while [[ ! -f /code/launch ]]; do
-                        sleep 10
-                      done
-                      rm /code/launch
-                    fi
+                  set -x
+                  exec "${serve[@]}"
+                - ""
+                - vllm
+                args:
+                - serve
+                - ${VLLM_MODEL}
+                - --port=8000
+                - --disable-log-requests
+                - --data-parallel-hybrid-lb
+                - --speculative-config=$(VLLM_SPECULATIVE_CONFIG)
+                - --enable-dbo
+                - --async-scheduling
+                - --dbo-decode-token-threshold=32
+                # try to keep 40GB free, https://github.com/vllm-project/vllm/issues/25597
+                - --kv-cache-memory=63000000000
+                - --enable-expert-parallel
+                - --enable-eplb
+                - --num-redundant-experts=$DP_SIZE
+                - --eplb-window-size=100
+                - --eplb-step-interval=100
+                - --eplb-log-balancedness
+                - --tensor-parallel-size=$TP_SIZE
+                - --data-parallel-size=$DP_SIZE
+                - --data-parallel-size-local=$DP_SIZE_LOCAL
+                - --data-parallel-address=${LWS_LEADER_ADDRESS}
+                - --data-parallel-rpc-port=5555
+                - --data-parallel-start-rank=$START_RANK
+                - --kv-transfer-config={"kv_connector":"NixlConnector", "kv_role":"kv_both"}
+                - --trust-remote-code
 
-                    source ~/.bashrc
-                    env | sort
-
-                    exec "${serve[@]}"
                 env:
                   - name: INTERACTIVE
                     value: ""
@@ -345,6 +345,9 @@ spec:
                     value: "DEBUG"
                   - name: HF_HUB_DISABLE_PROGRESS_BARS
                     value: "1"
+                  # Uncomment to trace the entire process
+                  #- name: STRACE
+                  #  value: "-f -o /tmp/strace.log"
                   - name: VLLM_DEBUG_ARGS
                     value: ""
                   # Uncomment to debug NCCL hangs or crashes
@@ -389,8 +392,13 @@ spec:
                   # Avoid known hangs with CUTLASS_MLA on B200 by forcing splits to be 1
                   - name: FORCE_NUM_KV_SPLITS
                     value: "1"
+                  # Prefer to calculate DP_SIZE from LWS group size
+                  - name: DP_DOMAIN_SIZE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
                   - name: DP_SIZE
-                    value: "16"
+                    value: ""
                   - name: TP_SIZE
                     value: "1"
                   - name: DP_SIZE_LOCAL

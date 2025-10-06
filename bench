@@ -9,7 +9,7 @@ if [[ ! -d "${OUTPUT}" ]]; then
 fi
 i=0
 
-ADDR="${ADDR:-$(kubectl get "gateway/${GATEWAY}" -o jsonpath='{.status.addresses[0].value}'):80}"
+HOST="${HOST:-$(kubectl get "gateway/${GATEWAY}" -o jsonpath='{.status.addresses[0].value}'):80}"
 
 trap 'echo;echo "interrupted"; pkill -INT -P $$' INT
 
@@ -18,7 +18,7 @@ rm -rf "${OUTPUT}/*.bin"
 files=()
 for var in "$@"; do
   IFS=',' read -r -a parts <<< "${var}"
-  addr="${parts[2]:-${ADDR}}"
+  addr="${parts[2]:-${HOST}}"
   file="${OUTPUT}/${i}.bin"
 
   echo "${addr}: ${parts[1]} @ ${parts[0]} QPS (${file})"
