@@ -126,13 +126,13 @@ spec:
                         --speculative-config '$(VLLM_SPECULATIVE_CONFIG)' \
                         --enable-dbo \
                         --async-scheduling \
-                        --dbo-decode-token-threshold 32 \
+                        --dbo-decode-token-threshold 32 \ # we can also toggle the --dbo-prefill-token-threshold fyi
                         # try to keep 40GB free, https://github.com/vllm-project/vllm/issues/25597
                         --kv-cache-memory=63000000000 \
                         --enable-expert-parallel \
                         --enable-eplb \
                         --num-redundant-experts $DP_SIZE \
-                        --eplb-window-size 1000 \
+                        --eplb-window-size 1000 \ # you should use a smaller step size for P. Since there are much fewer P steps per request. this will take a very long time to get into equilibrium
                         --eplb-step-interval 3000 \
                         --tensor-parallel-size $TP_SIZE \
                         --data-parallel-size $DP_SIZE \
