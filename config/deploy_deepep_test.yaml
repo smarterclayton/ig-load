@@ -1,0 +1,327 @@
+# To run this test:
+#
+# 0. Ask claytoncoleman@ for access to the internal test image for your project SA
+# 1. Configure a GKE node pool with RDMA (A3U+)
+# 2. Install leader worker set on the cluster
+# 3. kubectl apply -f config/deploy_deepep_test.yaml
+# 4. kubectl logs deepep-test-0 -f
+#
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+    name: deepep-test
+spec:
+    replicas: 1
+    leaderWorkerTemplate:
+        # change the size of the test in # of nodes with this value
+        size: 2
+        restartPolicy: None #RecreateGroupOnPodRestart
+
+        workerTemplate:
+            metadata:
+              annotations:
+                networking.gke.io/default-interface: 'eth0'
+                networking.gke.io/interfaces: |
+                  [
+                    {"interfaceName":"eth0","network":"default"},
+                    {"interfaceName":"eth2","network":"rdma-0"},
+                    {"interfaceName":"eth3","network":"rdma-1"},
+                    {"interfaceName":"eth4","network":"rdma-2"},
+                    {"interfaceName":"eth5","network":"rdma-3"},
+                    {"interfaceName":"eth6","network":"rdma-4"},
+                    {"interfaceName":"eth7","network":"rdma-5"},
+                    {"interfaceName":"eth8","network":"rdma-6"},
+                    {"interfaceName":"eth9","network":"rdma-7"}
+                  ]
+            spec:
+              # Prefer that all instances land in the same network sub block for
+              # best performance.
+              affinity:
+                podAffinity:
+                  # Subblock affinity cannot guarantee all pods in the replica
+                  # are in the same subblock, but is better than random spreading
+                  preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 2
+                    podAffinityTerm:
+                      labelSelector:
+                        matchLabels:
+                          app: vllm-deepseek-ep
+                      matchLabelKeys:
+                      - component
+                      topologyKey: cloud.google.com/gce-topology-block
+                  - weight: 1
+                    podAffinityTerm:
+                      labelSelector:
+                        matchLabels:
+                          app: vllm-deepseek-ep
+                      matchLabelKeys:
+                      - component
+                      topologyKey: cloud.google.com/gce-topology-subblock
+
+              terminationGracePeriodSeconds: 2
+
+              containers:
+              - name: vllm-worker
+                image: 
+                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:deepep_minimal_latest
+                  # also deepep_minimal_v1.2.1, deepep_minimal_da7ca24e
+                imagePullPolicy: Always
+                workingDir: /code
+                stdin: true
+                tty: true
+                command: 
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+
+                  apt-get -qq update && apt-get install -y dnsutils python3.12-dbg gettext-base
+
+                  # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
+                  cat <<'EOF' > ~/.bashrc
+                  #!/bin/bash
+
+                  bind '"\e[A":history-search-backward'
+                  bind '"\e[B":history-search-forward'
+
+                  shopt -s histappend
+                  export HISTFILESIZE=1000000
+                  export HISTSIZE=1000000
+                  export HISTCONTROL=ignoreboth
+                  shopt -s cmdhist
+
+                  export VENV_PATH=/app/venv
+                  export PATH=${VENV_PATH}/bin:${PATH}
+
+                  # Configure gIB (assuming v1.10 because of NCCL 2.27 for vLLM main)
+                  export PATH=/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
+                  source /usr/local/gib/scripts/set_nccl_env.sh
+
+                  # Define dynamic start arguments from the leader worker set
+                  export DP_SIZE=${DP_SIZE:-$(( DP_DOMAIN_SIZE * DP_SIZE_LOCAL ))}
+                  export START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+
+                  # Run the internode benchmark test across the pods in the LWS group
+                  function test_internode {
+                    WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) \
+                    python /app/deepep/tests/test_internode.py
+                  }
+                  # Verify node level bandwidth is acceptable
+                  function test_intranode {
+                    python /app/deepep/tests/test_intranode.py
+                  }
+                  # Run the low latency test across the pods in the LWS group
+                  function test_low_latency {
+                    WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) \
+                    python /app/deepep/tests/test_low_latency.py
+                  }
+                  EOF
+
+                  #######################################################
+                  # INSTALL Dependencies that have a _BRANCH variable set
+                  #######################################################
+                  components=( deepep )
+                  for script in "${components[@]}"; do
+                    branch="${script^^}_BRANCH"
+                    force="${script^^}_INSTALL"
+                    if [[ -z "${!branch-}" && -z "${!force-}" ]]; then
+                      continue
+                    fi
+                    for location in /init-scripts /install-scripts; do
+                      if [[ -f ${location}/${script}.sh ]]; then
+                        ${location}/${script}.sh
+                        break
+                      fi
+                    done
+                  done
+                  echo
+                  for script in "${components[@]}"; do
+                    echo "${script} $( git -C "/app/${script}" log --oneline -1 2>&1 || true )"
+                  done
+                  echo
+
+                  source ~/.bashrc
+
+                  # If set, hold the container before launch to allow debugging
+                  if [[ -n "${INTERACTIVE:-}" ]]; then
+                    echo "Waiting for /code/launch to run vLLM"
+                    while [[ ! -f /code/launch ]]; do
+                      sleep 10
+                    done
+                    rm /code/launch
+                  fi
+
+                  set -x
+                  "${@}"
+
+                  exec $( which sleep) infinity
+                - ""
+
+                args:
+                - test_internode
+
+                env:
+                  - name: INTERACTIVE
+                    value: ""
+                  - name: DISABLE_GCP_PATCH
+                    value: ""
+                  # Debugging logging (enable to see initialization details)
+                  - name: NVSHMEM_INFO
+                    #value: "true"
+                  - name: NVSHMEM_DEBUG
+                    #value: "INFO"
+                  - name: NVSHMEM_DEBUG_SUBSYS
+                    #value: "ALL"
+
+                  # - name: DEEPEP_BRANCH
+                  #   value: main
+                  # - name: DEEPEP_COMMIT
+                  #   value: 26cf250
+
+                  # When building packages at runtime, ensure we are compiled for hopper and blackwell
+                  - name: TORCH_CUDA_ARCH_LIST
+                    value: "9.0a 10.0"
+
+                  # GCP RDMA Networking config
+                  - name: NVSHMEM_REMOTE_TRANSPORT
+                    value: "ibgda"
+                  - name: NVSHMEM_IB_ENABLE_IBGDA
+                    value: "true"
+                  # GCP pairs GPU NICs to PCIe bridges (https://cloud.google.com/compute/docs/gpus/gpu-network-bandwidth#h200-gpus),
+                  # which can lead to NVSHMEM's automatic distance assignment algorithm selecting NICs
+                  # inefficiently. Instead, instruct NVSHMEM to select the NIC that aligns to the
+                  # index of the GPU on the node.
+                  #- name: NVSHMEM_ENABLE_NIC_PE_MAPPING
+                  #  value: "1"
+                  #- name: NVSHMEM_HCA_LIST
+                  #  value: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
+                  # We prefer to be GPU-initiated, and the GDRCopy mode requires a privileged device
+                  # to be mounted into the container. Disable to prevent a warning message during
+                  # startup.
+                  - name: NVSHMEM_DISABLE_GDRCOPY
+                    value: "true"
+                  - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+                    value: "eth0"
+
+                  # Uncomment to identify where CPP calls are crashing
+                  #- name: TORCH_SHOW_CPP_STACKTRACES
+                  #  value: "1"
+                  # Uncomment to get more accurate crash traces
+                  # - name: CUDA_LAUNCH_BLOCKING
+                  #  value: "1"
+                  # - name: CUDA_ENABLE_USER_TRIGGERED_COREDUMP
+                  #   value: "1"
+                  # Disable GCP NCCL telemetry due to failures to upload blocking
+                  # workload start
+                  - name: NCCL_TELEMETRY_MODE
+                    value: "0"
+
+                  - name: DP_DOMAIN_SIZE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/size']
+                  - name: DP_SIZE
+                    value: ""
+                  - name: TP_SIZE
+                    value: "1"
+                  - name: DP_SIZE_LOCAL
+                    value: "8"
+
+                  # Use cache directories from the host Cache directories
+                  - name: CCACHE_DIR
+                    value: /root/.nv/ComputeCache/.ccache
+                  - name: DG_JIT_CACHE_DIR
+                    value: /root/.nv/ComputeCache/.deepgemm
+
+                terminationMessagePolicy: FallbackToLogsOnError
+                lifecycle:
+                  preStop:
+                    sleep:
+                      seconds: 1
+
+                securityContext:
+                  runAsUser: 0  # needed for RH image to be able to override files (runs as vllm)
+                  # NVSHMEM IBGDA requires CAP_SYS_ADMIN or nvidia.ko to have PeerMappingOverride=1 set
+                  # Since PeerMappingOverride allows workloads to potential impact each other on the
+                  # same host, privileged is no less secure.
+                  privileged: true # needed to open the host device for UAR ??
+                  capabilities:
+                    add:
+                    - "IPC_LOCK"
+                    - "SYS_RAWIO"
+                resources:
+                  limits:
+                    nvidia.com/gpu: "8"
+                    
+                    networking.gke.io.networks/rdma-0: "1"
+                    networking.gke.io.networks/rdma-0.IP: "1"
+                    networking.gke.io.networks/rdma-1: "1"
+                    networking.gke.io.networks/rdma-1.IP: "1"
+                    networking.gke.io.networks/rdma-2: "1"
+                    networking.gke.io.networks/rdma-2.IP: "1"
+                    networking.gke.io.networks/rdma-3: "1"
+                    networking.gke.io.networks/rdma-3.IP: "1"
+                    networking.gke.io.networks/rdma-4: "1"
+                    networking.gke.io.networks/rdma-4.IP: "1"
+                    networking.gke.io.networks/rdma-5: "1"
+                    networking.gke.io.networks/rdma-5.IP: "1"
+                    networking.gke.io.networks/rdma-6: "1"
+                    networking.gke.io.networks/rdma-6.IP: "1"
+                    networking.gke.io.networks/rdma-7: "1"
+                    networking.gke.io.networks/rdma-7.IP: "1"                    
+                  requests:
+                    cpu: 32
+                    memory: 512Gi
+                    nvidia.com/gpu: "8"
+
+                    networking.gke.io.networks/rdma-0: "1"
+                    networking.gke.io.networks/rdma-0.IP: "1"
+                    networking.gke.io.networks/rdma-1: "1"
+                    networking.gke.io.networks/rdma-1.IP: "1"
+                    networking.gke.io.networks/rdma-2: "1"
+                    networking.gke.io.networks/rdma-2.IP: "1"
+                    networking.gke.io.networks/rdma-3: "1"
+                    networking.gke.io.networks/rdma-3.IP: "1"
+                    networking.gke.io.networks/rdma-4: "1"
+                    networking.gke.io.networks/rdma-4.IP: "1"
+                    networking.gke.io.networks/rdma-5: "1"
+                    networking.gke.io.networks/rdma-5.IP: "1"
+                    networking.gke.io.networks/rdma-6: "1"
+                    networking.gke.io.networks/rdma-6.IP: "1"
+                    networking.gke.io.networks/rdma-7: "1"
+                    networking.gke.io.networks/rdma-7.IP: "1"
+                volumeMounts:
+                  - name: shm
+                    mountPath: /dev/shm
+                  - name: init-scripts-volume
+                    mountPath: /init-scripts
+                  - name: nv-compute-cache
+                    mountPath: /root/.nv/ComputeCache
+                  # Required to access the gIB configuration for NCCL on GKE
+                  - mountPath: /usr/local/gib
+                    name: gib
+
+              volumes:
+                # Volume for the init script from ConfigMap
+                - name: init-scripts-volume
+                  configMap:
+                    name: vllm-init-scripts-config
+                    defaultMode: 0755 # Set execute permissions for the script
+                    optional: true
+                # Needed for NCCL to function
+                - name: shm
+                  emptyDir:
+                    medium: Memory
+                    # Verified that we need about 2Gi to start on NCCL 2.27
+                    sizeLimit: 3Gi
+                # Use a cache directory across pods on the SSD to avoid recompiling kernels
+                # Note: there are occasionally bugs in compilation cache hashing that may trigger
+                - name: nv-compute-cache
+                  hostPath:
+                    path: /mnt/stateful_partition/kube-ephemeral-ssd/shared_disk/nv-compute-cache
+                    type: DirectoryOrCreate
+                # Necessary for gIB
+                - name: gib
+                  hostPath:
+                    path: /home/kubernetes/bin/gib
+                    type: ""
