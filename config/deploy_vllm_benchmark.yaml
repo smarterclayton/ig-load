@@ -52,13 +52,15 @@ spec:
             #!/bin/bash
 
             # Shell conveniences
-            bind '"\e[A":history-search-backward'
-            bind '"\e[B":history-search-forward'
-            shopt -s histappend
-            export HISTFILESIZE=1000000
-            export HISTSIZE=1000000
-            export HISTCONTROL=ignoreboth
-            shopt -s cmdhist
+            if [[ $- == *i* ]]; then
+              bind '"\e[A":history-search-backward'
+              bind '"\e[B":history-search-forward'
+              shopt -s histappend
+              export HISTFILESIZE=1000000
+              export HISTSIZE=1000000
+              export HISTCONTROL=ignoreboth
+              shopt -s cmdhist
+            fi
 
             # Ensure the container behaves consistently depending on which source image
             if command -v apt-get >/dev/null 2>&1; then
@@ -81,7 +83,7 @@ spec:
               local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
               local concurrency=${MAX_CONCURRENCY:-$(( DP_SIZE * 100 ))}
               local prompts=${NUM_PROMPTS:-$(( concurrency * ${TIMES:-4} ))}
-              vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
+              VLLM_LOGGING_LEVEL=WARNING vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --request-id-prefix "bench-${HOSTNAME}" --seed "$(date +%M%H%M%S)" --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
             }
             # Run a benchmark against the prefill servers only
             function bench_prefill {

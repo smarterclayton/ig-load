@@ -14,7 +14,7 @@ spec:
     replicas: 1
     leaderWorkerTemplate:
         # change the size of the test in # of nodes with this value
-        size: 4
+        size: 2
         restartPolicy: None #RecreateGroupOnPodRestart
 
         workerTemplate:
@@ -81,14 +81,16 @@ spec:
                   cat <<'EOF' > ~/.bashrc
                   #!/bin/bash
 
-                  bind '"\e[A":history-search-backward'
-                  bind '"\e[B":history-search-forward'
-
-                  shopt -s histappend
-                  export HISTFILESIZE=1000000
-                  export HISTSIZE=1000000
-                  export HISTCONTROL=ignoreboth
-                  shopt -s cmdhist
+                  # Shell conveniences
+                  if [[ $- == *i* ]]; then
+                    bind '"\e[A":history-search-backward'
+                    bind '"\e[B":history-search-forward'
+                    shopt -s histappend
+                    export HISTFILESIZE=1000000
+                    export HISTSIZE=1000000
+                    export HISTCONTROL=ignoreboth
+                    shopt -s cmdhist
+                  fi
 
                   export VENV_PATH=/app/venv
                   export PATH=${VENV_PATH}/bin:${PATH}

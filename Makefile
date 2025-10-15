@@ -27,3 +27,18 @@ hf_secret:
 
 sync_builders:
 	gcloud builds triggers import --project=claytoncoleman-gke-dev --region=us-central1 --source images/gke_cloud_builders.yaml
+
+.PHONY: warmup
+warmup:
+	@kubectl get pods -l component=vllm-deepseek-ep-prefill -o name | xargs -P0 -I {} kubectl exec -c vllm-worker {} -- /bin/bash -lc 'warmup_prefill'
+
+CMD ?= bench
+N ?= 1
+
+.PHONY: on_prefill
+on_prefill:
+	@kubectl get pods -l component=vllm-deepseek-ep-prefill -o name | xargs -P0 -I {} kubectl exec -c vllm-worker {} -- /bin/bash -lc '${CMD}'
+
+.PHONY: bench
+bench:
+	@kubectl get pods -l app=vllm-benchmark -o name | head -n ${N} | xargs -P0 -I {} kubectl exec {} -- /bin/bash -lc '${CMD}'

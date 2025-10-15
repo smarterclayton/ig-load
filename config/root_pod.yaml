@@ -1,0 +1,96 @@
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: root
+spec:
+  selector:
+    matchLabels:
+      app: root-shell
+  template:
+    metadata:
+      labels:
+        app: root-shell
+    spec:
+      hostPID: true
+      #nodeSelector:
+        #kubernetes.io/hostname: gke-gke-a4-swap-a4-highgpu-8g-a4-pool-f1210e0a-ntsf
+      tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      containers:
+      - name: shell
+        image: ubuntu:22.04
+          #gke.gcr.io/pause:3.8
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          trap "" SIGCHLD
+
+          # bpftrace config
+          cat >/tmp/bpf.sh <<'DONE'
+          #!/bin/bash
+          
+          BUILD_ID=18613.339.44 # (read from /etc/os-release on host)
+          mkdir /tmp/kernel_headers
+          cd /tmp/kernel_headers
+          if [[ ! -f uar.bt ]]; then
+            apt-get update && apt-get install -y wget bpftrace xz-utils
+            wget https://storage.googleapis.com/cos-tools/${BUILD_ID}/kernel-headers.tgz
+            export BPFTRACE_KERNEL_SOURCE=/tmp/kernel_headers/usr/src/linux-headers-$(uname -r)
+            tar xvzf kernel-headers.tgz
+            cat >uar.bt <<'EOF'
+          #!/usr/bin/env bpftrace
+
+          kprobe:mlx5_cmd_uar_alloc {
+            @alloc_devs[tid] = arg0; // device (first argument)
+            @["allocs"] = count();
+          }
+
+          kretprobe:mlx5_cmd_uar_alloc {
+            $dev = @alloc_devs[tid];
+            printf("[%lld] mlx5_cmd_uar_alloc dev=%p ret=%d\n", nsecs, $dev, retval);
+          }
+
+          kprobe:mlx5_cmd_uar_dealloc {
+            @dealloc_devs[tid] = arg0; // device (first argument)
+            @["deallocs"] = count();
+          }
+
+          kretprobe:mlx5_cmd_uar_dealloc {
+            $dev = @dealloc_devs[tid];
+            printf("[%lld] mlx5_cmd_uar_dealloc dev=%p ret=%d\n", nsecs, $dev, retval);
+          }
+
+          END {
+            clear(@dealloc_devs);
+            clear(@alloc_devs);
+          }
+          EOF
+          fi
+          bpftrace uar.bt
+          DONE
+          chmod ug+x /tmp/bpf.sh
+
+          sleep infinity & wait
+        volumeMounts:
+        # change this to / to be in the root shell
+        - mountPath: /root
+          name: root
+        - name: kernel-debug
+          mountPath: /sys/kernel/debug
+        securityContext:
+          runAsUser: 0
+          privileged: true
+      terminationGracePeriodSeconds: 2
+      volumes:
+      - name: root
+        hostPath:
+          path: /
+      # Allows bpftrace programming
+      - name: kernel-debug
+        hostPath:
+          path: /sys/kernel/debug
+          type: ""
