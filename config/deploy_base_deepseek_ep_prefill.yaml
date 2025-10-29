@@ -65,7 +65,9 @@ spec:
               containers:
               - name: vllm-worker
                 image:
-                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:relesea-v0.11.0-20251015
+                  ghcr.io/llm-d/llm-d-cuda-dev@sha256:da075135316c45bb806b6e6e063daee204292eea6090ff934c58d7cce4f49a07
+                  #gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main_20251023_nvshmem4py
+                  #ghcr.io/llm-d/llm-d-cuda-dev@sha256:c2bcf0db71a082c774eb2574d56d727590c087fc6c91ede7868a14a31f549339
                   #:main_20251023_nvshmem4py
                   #:relesea-v0.11.0-20251015
                 imagePullPolicy: Always
@@ -75,6 +77,7 @@ spec:
                 - -c
                 - |
                   set -euo pipefail
+                  #trap "" SIGCHLD
                   echo Preparing vLLM
                   echo
 
@@ -226,9 +229,11 @@ spec:
                   echo
 
                   # Work around "unable to create ah" error
-                  NVSHMEM_DIR=/usr/local/nvshmem
-                  VIRTUAL_ENV=/app/venv uv pip install "$( ls "${NVSHMEM_DIR}"/lib/python/dist/nvshmem4py_cu"${CUDA_MAJOR}"-*-cp"${PYTHON_VERSION/./}"-cp"${PYTHON_VERSION/./}"-manylinux_*.whl | head -1 )"
-                  VIRTUAL_ENV=/app/venv uv pip uninstall nvidia-nvshmem-cu12
+                  #if wheel="$( ls "${NVSHMEM_DIR:-${NVSHMEM_PREFIX}}"/lib/python/dist/nvshmem4py_cu"${CUDA_MAJOR}"-*-cp"${PYTHON_VERSION/./}"-cp"${PYTHON_VERSION/./}"-manylinux_*.whl | head -1 )"; then
+                  #  VIRTUAL_ENV=/app/venv uv pip install "${wheel}"
+                  #fi
+                  #VIRTUAL_ENV=/app/venv uv pip uninstall nvidia-nvshmem-cu${CUDA_MAJOR}
+                  #VIRTUAL_ENV=/app/venv uv pip uninstall nvshmem4py-cu${CUDA_MAJOR}
 
                   env | sort
 
@@ -285,6 +290,8 @@ spec:
                   - name: BASH_ENV
                     value: /usr/local/gib/scripts/set_nccl_env.sh
 
+                  #- name: VLLM_BRANCH
+                  #  value: wentao-fix-shape-issue-for-eplb-expert
                   # Use a GCP specific patch to force NVSHMEM to choose the
                   # NIC with the same index as the GPU for EP. Otherwise we
                   # only use 4 of the 8 NICs.
