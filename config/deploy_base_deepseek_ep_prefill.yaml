@@ -65,9 +65,7 @@ spec:
               containers:
               - name: vllm-worker
                 image:
-                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:relesea-v0.11.0-20251015
-                  #:main_20251023_nvshmem4py
-                  #:relesea-v0.11.0-20251015
+                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main_wideep_fixes
                 imagePullPolicy: Always
                 workingDir: /code
                 command:
@@ -75,6 +73,7 @@ spec:
                 - -c
                 - |
                   set -euo pipefail
+                  #trap "" SIGCHLD
                   echo Preparing vLLM
                   echo
 
@@ -108,7 +107,7 @@ spec:
 
                   # Start Qwen3 for a faster and simpler MoE test harness
                   function serve_simple {
-                    ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+                    ${VLLM_HOME}/bin/vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8200} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
                   }
                   function collect_vllm_env {
                     wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
@@ -183,7 +182,7 @@ spec:
 
                   # Drop the kernel cache if necessary
                   if [[ -n "${DROP_KERNEL_CACHE}" ]]; then
-                    find /root/.nv/ComputeCache -mindepth 1 -delete
+                    find /var/cache -mindepth 1 -delete
                   fi
 
                   # Debugging tools for the environment
@@ -225,11 +224,6 @@ spec:
                   done
                   echo
 
-                  # Work around "unable to create ah" error
-                  NVSHMEM_DIR=/usr/local/nvshmem
-                  VIRTUAL_ENV=/app/venv uv pip install "$( ls "${NVSHMEM_DIR}"/lib/python/dist/nvshmem4py_cu"${CUDA_MAJOR}"-*-cp"${PYTHON_VERSION/./}"-cp"${PYTHON_VERSION/./}"-manylinux_*.whl | head -1 )"
-                  VIRTUAL_ENV=/app/venv uv pip uninstall nvidia-nvshmem-cu12
-
                   env | sort
 
                   # If set, hold the container before launch to allow debugging
@@ -241,11 +235,14 @@ spec:
                     rm /code/launch
                   fi
 
+                  # Launch
                   source ~/.bashrc
                   set -x
+
                   # Clear /dev/shm on start to prevent running out of space when crashes occur
                   # https://github.com/llm-d/llm-d/issues/352
                   find /dev/shm -type f -delete
+
                   exec "${serve[@]}"
                 - ""
                 - vllm
@@ -285,13 +282,6 @@ spec:
                   - name: BASH_ENV
                     value: /usr/local/gib/scripts/set_nccl_env.sh
 
-                  # Use a GCP specific patch to force NVSHMEM to choose the
-                  # NIC with the same index as the GPU for EP. Otherwise we
-                  # only use 4 of the 8 NICs.
-                  - name: DEEPEP_REPO_URL
-                    value: https://github.com/smarterclayton/DeepEP.git
-                  - name: DEEPEP_BRANCH
-                    value: nic_pe_alignment
                   # Set to 1 when running from a branch close to vLLM HEAD to attempt to use cached artifacts
                   # - name: VLLM_USE_PRECOMPILED
                   #   value: "1"
@@ -382,16 +372,11 @@ spec:
                   # vLLM performance tuning
                   - name: VLLM_USE_DEEP_GEMM
                     value: "1"
-                  # Select an all2all backend optimized for latency or throughput
+                  # Use the DeepEP normal (vLLM calls them high throughput) kernels
                   - name: VLLM_ALL2ALL_BACKEND
-                    # value: "naive"
-                    # value: "pplx"
-                    value: "deepep_high_throughput"
-                    # value: deepep_low_latency
+                    value: deepep_high_throughput
                   - name: VLLM_ATTENTION_BACKEND
                     value: CUTLASS_MLA
-                    #value: FLASHINFER_MLA
-                    #value: TRITON_MLA
                   # Avoid known hangs with CUTLASS_MLA on B200 by forcing splits to be 1
                   - name: FORCE_NUM_KV_SPLITS
                     value: "1"

@@ -19,6 +19,8 @@ spec:
 
         workerTemplate:
             metadata:
+              labels:
+                app: deepep-test
               annotations:
                 networking.gke.io/default-interface: 'eth0'
                 networking.gke.io/interfaces: |
@@ -63,7 +65,9 @@ spec:
               containers:
               - name: vllm-worker
                 image: 
-                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:deepep_minimal_latest
+                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:nvshmem_fail_minimal
+                  # ghcr.io/llm-d/llm-d-cuda-dev-ubuntu:pr-397
+                  #:deepep_minimal_latest
                   # also deepep_minimal_v1.2.1, deepep_minimal_da7ca24e
                 imagePullPolicy: Always
                 workingDir: /code
@@ -74,8 +78,6 @@ spec:
                 - -c
                 - |
                   set -euo pipefail
-
-                  #apt-get -qq update && apt-get install -y dnsutils python3.12-dbg gettext-base
 
                   # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
                   cat <<'EOF' > ~/.bashrc
@@ -92,8 +94,10 @@ spec:
                     shopt -s cmdhist
                   fi
 
-                  export VENV_PATH=/app/venv
-                  export PATH=${VENV_PATH}/bin:${PATH}
+                  if command -v apt-get >/dev/null 2>&1; then
+                    export VIRTUAL_ENV=/app/venv
+                    export PATH=${VIRTUAL_ENV}/bin:${PATH}:/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
+                  fi
 
                   # Configure gIB (assuming v1.10 because of NCCL 2.27 for vLLM main)
                   export PATH=/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
@@ -144,6 +148,11 @@ spec:
 
                   source ~/.bashrc
 
+                  if [[ ! -d /app/deepep ]]; then
+                    git clone ${DEEPEP_REPO_URL:-https://github.com/deepseek-ai/DeepEP.git} /app/deepep/
+                    git -C /app/deepep checkout ${DEEPEP_COMMIT:-${DEEPEP_BRANCH:-main}}
+                  fi
+
                   # If set, hold the container before launch to allow debugging
                   if [[ -n "${INTERACTIVE:-}" ]]; then
                     echo "Waiting for /code/launch to run vLLM"
@@ -160,19 +169,11 @@ spec:
                 - ""
 
                 args:
-                - test_internode
+                - test_low_latency
 
                 env:
                   - name: INTERACTIVE
-                    value: ""
-
-                  # Use a GCP specific patch to force NVSHMEM to choose the
-                  # NIC with the same index as the GPU for EP. Otherwise we
-                  # only use 4 of the 8 NICs.
-                  - name: DEEPEP_REPO_URL
-                    value: https://github.com/smarterclayton/DeepEP.git
-                  - name: DEEPEP_BRANCH
-                    value: nic_pe_alignment
+                    value: "1"
 
                   # When building packages at runtime, ensure we are compiled for hopper and blackwell
                   - name: TORCH_CUDA_ARCH_LIST
@@ -296,8 +297,6 @@ spec:
                     mountPath: /dev/shm
                   - name: init-scripts-volume
                     mountPath: /init-scripts
-                  - name: nv-compute-cache
-                    mountPath: /root/.nv/ComputeCache
                   # Required to access the gIB configuration for NCCL on GKE
                   - mountPath: /usr/local/gib
                     name: gib
@@ -313,14 +312,7 @@ spec:
                 - name: shm
                   emptyDir:
                     medium: Memory
-                    # Verified that we need about 2Gi to start on NCCL 2.27
-                    sizeLimit: 3Gi
-                # Use a cache directory across pods on the SSD to avoid recompiling kernels
-                # Note: there are occasionally bugs in compilation cache hashing that may trigger
-                - name: nv-compute-cache
-                  hostPath:
-                    path: /mnt/stateful_partition/kube-ephemeral-ssd/shared_disk/nv-compute-cache
-                    type: DirectoryOrCreate
+                    sizeLimit: 1Gi
                 # Necessary for gIB
                 - name: gib
                   hostPath:
