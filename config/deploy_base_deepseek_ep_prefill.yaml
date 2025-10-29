@@ -65,9 +65,7 @@ spec:
               containers:
               - name: vllm-worker
                 image:
-                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:relesea-v0.11.0-20251015
-                  #:main_20251023_nvshmem4py
-                  #:relesea-v0.11.0-20251015
+                  gcr.io/claytoncoleman-gke-dev/github.com/smarterclayton/vllm-dp-lws:main_wideep_fixes
                 imagePullPolicy: Always
                 workingDir: /code
                 command:
@@ -75,6 +73,7 @@ spec:
                 - -c
                 - |
                   set -euo pipefail
+                  #trap "" SIGCHLD
                   echo Preparing vLLM
                   echo
 
@@ -183,7 +182,7 @@ spec:
 
                   # Drop the kernel cache if necessary
                   if [[ -n "${DROP_KERNEL_CACHE}" ]]; then
-                    find /root/.nv/ComputeCache -mindepth 1 -delete
+                    find /var/cache -mindepth 1 -delete
                   fi
 
                   # Debugging tools for the environment
@@ -226,9 +225,11 @@ spec:
                   echo
 
                   # Work around "unable to create ah" error
-                  NVSHMEM_DIR=/usr/local/nvshmem
-                  VIRTUAL_ENV=/app/venv uv pip install "$( ls "${NVSHMEM_DIR}"/lib/python/dist/nvshmem4py_cu"${CUDA_MAJOR}"-*-cp"${PYTHON_VERSION/./}"-cp"${PYTHON_VERSION/./}"-manylinux_*.whl | head -1 )"
-                  VIRTUAL_ENV=/app/venv uv pip uninstall nvidia-nvshmem-cu12
+                  #if wheel="$( ls "${NVSHMEM_DIR:-${NVSHMEM_PREFIX}}"/lib/python/dist/nvshmem4py_cu"${CUDA_MAJOR}"-*-cp"${PYTHON_VERSION/./}"-cp"${PYTHON_VERSION/./}"-manylinux_*.whl | head -1 )"; then
+                  #  VIRTUAL_ENV=/app/venv uv pip install "${wheel}"
+                  #fi
+                  #VIRTUAL_ENV=/app/venv uv pip uninstall nvidia-nvshmem-cu${CUDA_MAJOR}
+                  #VIRTUAL_ENV=/app/venv uv pip uninstall nvshmem4py-cu${CUDA_MAJOR}
 
                   env | sort
 
@@ -285,13 +286,6 @@ spec:
                   - name: BASH_ENV
                     value: /usr/local/gib/scripts/set_nccl_env.sh
 
-                  # Use a GCP specific patch to force NVSHMEM to choose the
-                  # NIC with the same index as the GPU for EP. Otherwise we
-                  # only use 4 of the 8 NICs.
-                  - name: DEEPEP_REPO_URL
-                    value: https://github.com/smarterclayton/DeepEP.git
-                  - name: DEEPEP_BRANCH
-                    value: nic_pe_alignment
                   # Set to 1 when running from a branch close to vLLM HEAD to attempt to use cached artifacts
                   # - name: VLLM_USE_PRECOMPILED
                   #   value: "1"
@@ -382,12 +376,9 @@ spec:
                   # vLLM performance tuning
                   - name: VLLM_USE_DEEP_GEMM
                     value: "1"
-                  # Select an all2all backend optimized for latency or throughput
+                  # Use the DeepEP normal (vLLM calls them high throughput) kernels
                   - name: VLLM_ALL2ALL_BACKEND
-                    # value: "naive"
-                    # value: "pplx"
                     value: "deepep_high_throughput"
-                    # value: deepep_low_latency
                   - name: VLLM_ATTENTION_BACKEND
                     value: CUTLASS_MLA
                     #value: FLASHINFER_MLA
