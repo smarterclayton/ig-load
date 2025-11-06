@@ -78,24 +78,40 @@ spec:
             }
             # Run a benchmark against the decode servers
             function bench_decode {
-              local headers; local port=${PORT:-8000}; if [[ -n "${DISAGG-}" ]]; then prefill_hosts="$( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"; headers=" --header x-prefiller-host-port=${prefill_hosts} "; fi
+              local headers; local port=${PORT:-8000}
+              if [[ -n "${DISAGG-}" || -n "${DISAGG_HOST-}" ]]; then 
+                if [[ "{DISAGG_HOST-}" != "" ]]; then
+                  prefill_hosts="${DISAGG_HOST}"
+                else
+                  prefill_hosts="$( dig SRV +short +search ${DEFAULT_PREFILL_HOST:-vllm-deepseek-ep-prefill} | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"
+                fi
+                headers=" --header 'x-prefiller-host-port: ${prefill_hosts}' "; 
+              fi
               local concurrency=${MAX_CONCURRENCY:-$(( DP_SIZE * 100 ))}
               local prompts=${NUM_PROMPTS:-$(( concurrency * ${TIMES:-4} ))}
               vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
             }
             # Run a benchmark against the prefill servers only
             function bench_prefill {
-              MAX_CONCURRENCY=${MAX_CONCURRENCY:-$(( DP_SIZE * 5 / 2 ))} TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1} DEFAULT_HOST=vllm-deepseek-ep-prefill DISAGG=0 bench_decode
+              MAX_CONCURRENCY=${MAX_CONCURRENCY:-$(( DP_SIZE * 5 / 2 ))} TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1} DEFAULT_HOST=${DEFAULT_PREFILL_HOST:-vllm-deepseek-ep-prefill} DISAGG= bench_decode
             }
             # Run a benchmark against the default configuration
             function bench {
               TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1000} DISAGG=1 bench_decode
             }
             function req {
-              unset prefiller; if [[ -n "${DISAGG-}" ]]; then prefiller="X-Prefiller-Host-Port: $( dig SRV +short +search vllm-deepseek-ep-prefill | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk '{print $1 ":8000"}' | paste -sd ', ' -)"; fi
-              curl -i -H 'Content-Type: application/json' -H 'X-Request-Id: shell_req' -H "${prefiller-}" -d \
+              unset prefiller; 
+              if [[ -n "${DISAGG-}" || -n "${DISAGG_HOST-}" ]]; then 
+                if [[ "{DISAGG_HOST-}" != "" ]]; then
+                  prefill_hosts="${DISAGG_HOST}"
+                else
+                  prefill_hosts="$( dig SRV +short +search ${DEFAULT_PREFILL_HOST:-vllm-deepseek-ep-prefill} | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"
+                fi
+                prefiller="X-Prefiller-Host-Port: ${prefill_hosts}"
+              fi
+              curl -i -H 'Content-Type: application/json' -H "${prefiller-}" -d \
                 "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don't forget to provide personal anecdotes.\n\n: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}" "$@" \
-                "${HOST:-localhost}:${PORT:-8000}/v1/completions"
+                "${HOST:-${DEFAULT_HOST:-localhost}}:${PORT:-8000}/v1/completions"
             }
             # Start Qwen3 for a faster and simpler MoE test harness
             function serve_simple {
