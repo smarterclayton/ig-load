@@ -8,6 +8,10 @@ spec:
     selector:
       matchLabels:
         app: vllm-benchmark
+    strategy:
+      rollingUpdate:
+        maxUnavailable: 100%
+        maxSurge: 100%
     template:
       metadata:
         labels:
@@ -52,13 +56,15 @@ spec:
             #!/bin/bash
 
             # Shell conveniences
-            bind '"\e[A":history-search-backward'
-            bind '"\e[B":history-search-forward'
-            shopt -s histappend
-            export HISTFILESIZE=1000000
-            export HISTSIZE=1000000
-            export HISTCONTROL=ignoreboth
-            shopt -s cmdhist
+            if [[ $- == *i* ]]; then
+              bind '"\e[A":history-search-backward'
+              bind '"\e[B":history-search-forward'
+              shopt -s histappend
+              export HISTFILESIZE=1000000
+              export HISTSIZE=1000000
+              export HISTCONTROL=ignoreboth
+              shopt -s cmdhist
+            fi
 
             # Ensure the container behaves consistently depending on which source image
             if command -v apt-get >/dev/null 2>&1; then
@@ -81,15 +87,14 @@ spec:
               local headers; local port=${PORT:-8000}
               if [[ -n "${DISAGG-}" || -n "${DISAGG_HOST-}" ]]; then 
                 if [[ "{DISAGG_HOST-}" != "" ]]; then
-                  prefill_hosts="${DISAGG_HOST}"
+                  headers=" --header x-prefiller-host-port=${DISAGG_HOST} ";
                 else
-                  prefill_hosts="$( dig SRV +short +search ${DEFAULT_PREFILL_HOST:-vllm-deepseek-ep-prefill} | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"
+                  headers=" --header x-prefiller-host-port=$( dig SRV +short +search ${DEFAULT_PREFILL_HOST:-vllm-deepseek-ep-prefill} | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ',' -) ";
                 fi
-                headers=" --header 'x-prefiller-host-port: ${prefill_hosts}' "; 
               fi
               local concurrency=${MAX_CONCURRENCY:-$(( DP_SIZE * 100 ))}
               local prompts=${NUM_PROMPTS:-$(( concurrency * ${TIMES:-4} ))}
-              vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
+              vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --request-id-prefix "bench-${HOSTNAME}" --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
             }
             # Run a benchmark against the prefill servers only
             function bench_prefill {
@@ -100,7 +105,7 @@ spec:
               TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1000} DISAGG=1 bench_decode
             }
             function req {
-              unset prefiller; 
+              unset prefiller; local port=${PORT:-8000}
               if [[ -n "${DISAGG-}" || -n "${DISAGG_HOST-}" ]]; then 
                 if [[ "{DISAGG_HOST-}" != "" ]]; then
                   prefill_hosts="${DISAGG_HOST}"
@@ -111,7 +116,7 @@ spec:
               fi
               curl -i -H 'Content-Type: application/json' -H "${prefiller-}" -d \
                 "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don't forget to provide personal anecdotes.\n\n: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}" "$@" \
-                "${HOST:-${DEFAULT_HOST:-localhost}}:${PORT:-8000}/v1/completions"
+                "${HOST:-${DEFAULT_HOST:-localhost}}:${port}/v1/completions"
             }
             # Start Qwen3 for a faster and simpler MoE test harness
             function serve_simple {
@@ -147,6 +152,11 @@ spec:
                           \"output_tokens_stdev\": \"1\"}" \
                 --output-path "/tmp/out.json" \
                 --output-sampling 10
+            }
+            function profile {
+                curl "${HOST}:${PORT:-8000}/start_profile" -X POST
+                sleep ${1:-3}
+                curl "${HOST}:${PORT:-8000}/stop_profile" -X POST
             }
 
             EOF
