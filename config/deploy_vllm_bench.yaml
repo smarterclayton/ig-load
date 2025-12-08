@@ -1,27 +1,29 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
-    name: vllm-benchmark
+    name: vllm-bench
     annotations:
 spec:
+    podManagementPolicy: Parallel
     replicas: 6
     selector:
       matchLabels:
-        app: vllm-benchmark
-    strategy:
+        app: vllm-bench
+    updateStrategy:
       rollingUpdate:
         maxUnavailable: 100%
-        maxSurge: 100%
     template:
       metadata:
         labels:
-          app: vllm-benchmark
-          llm-d.ai/role: benchmark
+          app: vllm-bench
+          rev: "4"
       spec:
         tolerations:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
+
+        terminationGracePeriodSeconds: 10
 
         containers:
         - name: vllm
@@ -33,22 +35,13 @@ spec:
           - -c
           - |
             set -euo pipefail
+            # terminate defunct processes as PID 1
+            trap "" SIGCHLD
+            # interrupt 'sleep & wait' loop fast
+            trap 'echo; echo "interrupted"; pkill -P $$$$; exit 0' SIGTERM
 
-            # Debugging tools for the environment, libnl required for set_nccl_env.sh
             if command -v apt-get >/dev/null 2>&1; then
-              # Using https://github.com/smarterclayton/vllm-dp-lws
-              # apt-get -qq update && apt-get install -y dnsutils # python3.12-dbg
               true
-            #else
-              # Convert the llm-d image to be compatible with build environment
-              # dnf install -qy gdb strace
-              # curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin/" sh
-              # export VENV_PATH="/opt/vllm"
-              # export PYTHON="${VENV_PATH}/bin/python"
-              # export PATH="${VENV_PATH}/bin:${PATH}"
-              # export CUDA_MAJOR=12 CUDA_MINOR=9 CUDA_PATCH=1
-              # "${PYTHON}" -m ensurepip --upgrade
-              # "${PYTHON}" -m pip install -U pip wheel setuptools
             fi
 
             # Create ~/.bashrc so that kubectl exec -- /bin/bash is ready to run
@@ -82,6 +75,7 @@ spec:
             function warmup_prefill {
               TOKENS_IN=1000 TIMES=3 bench_prefill
             }
+
             # Run a benchmark against the decode servers
             function bench_decode {
               local headers; local port=${PORT:-8000}
@@ -94,7 +88,7 @@ spec:
               fi
               local concurrency=${MAX_CONCURRENCY:-$(( DP_SIZE * 100 ))}
               local prompts=${NUM_PROMPTS:-$(( concurrency * ${TIMES:-4} ))}
-              vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --request-id-prefix "bench-${HOSTNAME}" --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm
+              vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} --model ${VLLM_MODEL} --dataset-name random --request-id-prefix "bench-${HOSTNAME}" --seed $(date +%M%H%M%S) --ignore-eos --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} --max-concurrency ${concurrency} --num-prompts ${prompts} --ready-check-timeout-sec 0 --disable-tqdm 2>&1 | sed -ue "s/^/[$HOSTNAME]: /g"
             }
             # Run a benchmark against the prefill servers only
             function bench_prefill {
@@ -158,52 +152,21 @@ spec:
                 sleep ${1:-3}
                 curl "${HOST}:${PORT:-8000}/stop_profile" -X POST
             }
-
             EOF
-
-            #######################################################
-            # INSTALL Dependencies that have a _BRANCH variable set
-            #######################################################
-            components=( vllm )
-            for script in "${components[@]}"; do
-              branch="${script^^}_BRANCH"
-              force="${script^^}_INSTALL"
-              if [[ -z "${!branch-}" && -z "${!force-}" ]]; then
-                continue
-              fi
-              for location in /init-scripts /install-scripts; do
-                if [[ -f ${location}/${script}.sh ]]; then
-                  ${location}/${script}.sh
-                  break
-                fi
-              done
-            done
-            echo
-            for script in "${components[@]}"; do
-              echo "${script} $( git -C "/app/${script}" log --oneline -1 2>&1 || true )"
-            done
-            echo
 
             # Build and resolve the start command (allowing variables to be
             # resolved in the container arguments)
             source ~/.bashrc
-
-            #uv pip uninstall torch torchvision
-            #uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-            #VLLM_TARGET_DEVICE=cpu uv pip install /app/vllm --no-build-isolation
 
             echo ready
             while true; do
               sleep 10 & wait
             done
           - ""
-          - vllm
 
           env:
           - name: VLLM_MODEL
             value: "deepseek-ai/DeepSeek-V3.1"
-          - name: DP_SIZE
-            value: "16"
           - name: VLLM_PLUGINS
             value: "cpu"
 

@@ -15,3 +15,15 @@ gcloud compute instances report-host-as-faulty NODE '--fault-reasons=behavior=BE
 kubectl get pods -l app=vllm-deepseek-ep -o name | xargs -I {} kubectl exec -c vllm-worker {} -- /bin/bash -c 'dmesg | grep -E "reached miss count|Xid" | sed "s/^/$HOSTNAME: /"'
 # run the internode test on all pods in parallel
 kubectl get pods -o name -l component=vllm-deepseek-ep-decode | xargs -P0 -I {} kubectl exec -c vllm-worker {} -- /bin/bash -lc "test_internode"
+
+kubectl exec -it sts/wide-ep-llm-d-decode-0 -- /bin/bash -c 'find /var/cache/vllm/traces/ -type f -delete; addr=localhost; curl "${addr}:${PORT:-8000}/start_profile" -X POST; sleep ${1:-3}; curl "${addr}:${PORT:-8000}/stop_profile" -X POST;'
+
+function bench_llmd {
+    count=4
+    for i in "$@"; do 
+        kubectl get pods -l app=vllm-bench -o name | \
+            head -${count} | \
+            xargs -P0 -I {} kubectl exec -c vllm {} -- \
+                /bin/bash -lc "DEFAULT_HOST=wide-ep-llm-d-decode DISAGG_HOST=wide-ep-llm-d-prefill:8000 VLLM_MODEL=deepseek-ai/DeepSeek-R1-0528 MAX_CONCURRENCY=$(( $i / $count )) bench"
+    done
+}

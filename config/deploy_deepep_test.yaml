@@ -14,7 +14,7 @@ spec:
     replicas: 1
     leaderWorkerTemplate:
         # change the size of the test in # of nodes with this value
-        size: 4
+        size: 2
         restartPolicy: None #RecreateGroupOnPodRestart
 
         workerTemplate:
@@ -117,6 +117,9 @@ spec:
                   }
                   EOF
 
+                  VIRTUAL_ENV=/app/venv uv pip uninstall nvidia-nvshmem-cu12 nvshmem4py-cu12
+                  export NVSHMEM_DIR=${NVSHMEM_PREFIX}
+
                   #######################################################
                   # INSTALL Dependencies that have a _BRANCH variable set
                   #######################################################
@@ -158,7 +161,7 @@ spec:
                 - ""
 
                 args:
-                - test_internode
+                - test_low_latency
 
                 env:
                   - name: INTERACTIVE

@@ -1,4 +1,5 @@
 join -1 1 -2 1 \
     <(kubectl get pods -o custom-columns=NODE:spec.nodeName,NAMESPACE:metadata.namespace,NAME:metadata.name --no-headers $@ | sort -k 1) \
     <(kubectl get nodes -o 'custom-columns=NAME:metadata.name,BLOCK:metadata.labels.cloud\.google\.com\/gce-topology-block,SUBBLOCK:metadata.labels.cloud\.google\.com\/gce-topology-subblock' --no-headers | sort -b) | \
-    sort -k 2,3
+    sort -k 2,3 | \
+    column -t

@@ -1,0 +1,119 @@
+#!/bin/bash
+
+# Bash script that can be sourced to execute vllm bench serve in a standard way
+
+# Shell conveniences
+if [[ $- == *i* ]]; then
+    bind '"\e[A":history-search-backward'
+    bind '"\e[B":history-search-forward'
+    shopt -s histappend
+    export HISTFILESIZE=1000000
+    export HISTSIZE=1000000
+    export HISTCONTROL=ignoreboth
+    shopt -s cmdhist
+fi
+
+export PATH=${PATH}:/usr/local/nvidia/bin:${PATH}:/usr/local/gib/bin
+
+if ! which vllm 2>/dev/null; then 
+    echo "error: Unable to find 'vllm' in path" >&2
+    exit 1
+fi
+
+# Define test scripts
+export DEFAULT_HOST=${DEFAULT_HOST:-wide-ep-llm-d-decode}
+export DEFAULT_PREFILL_HOST=${DEFAULT_PREFILL_HOST:-wide-ep-llm-d-prefill}
+
+# Run a benchmark against the decode servers
+function bench_decode {
+    local headers; local port=${PORT:-8000}
+    if [[ -n "${DISAGG-}" || -n "${DISAGG_HOST-}" ]]; then 
+        if [[ "{DISAGG_HOST-}" != "" ]]; then
+            headers=" --header x-prefiller-host-port=${DISAGG_HOST} ";
+        else
+            headers=" --header x-prefiller-host-port=$( dig SRV +short +search ${DEFAULT_PREFILL_HOST} | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ',' -) ";
+        fi
+    fi
+    local concurrency=${MAX_CONCURRENCY:-$(( DP_SIZE * 100 ))}
+    local prompts=${NUM_PROMPTS:-$(( concurrency * ${TIMES:-4} ))}
+    vllm bench serve ${headers:-} --base-url http://${HOST:-${DEFAULT_HOST}}:${port} \
+            --model ${VLLM_MODEL} --dataset-name random --request-id-prefix "bench-${HOSTNAME}" \
+            --seed $(date +%M%H%M%S) --ignore-eos \
+            --random-input-len ${TOKENS_IN:-2} --random-output-len ${TOKENS_OUT:-100} \
+            --max-concurrency ${concurrency} --num-prompts ${prompts} \
+            --ready-check-timeout-sec 0 --disable-tqdm 2>&1 | \
+        sed -ue "s/^/[$HOSTNAME]: /g"
+}
+
+# Run a benchmark against the prefill servers only
+function bench_prefill {
+    MAX_CONCURRENCY=${MAX_CONCURRENCY:-$(( DP_SIZE * 5 / 2 ))} TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1} DEFAULT_HOST=${DEFAULT_PREFILL_HOST} DISAGG= bench_decode
+}
+
+# Run a benchmark against the default configuration
+function bench {
+    TOKENS_IN=${TOKENS_IN:-1000} TOKENS_OUT=${TOKENS_OUT:-1000} DISAGG=1 bench_decode
+}
+
+function req {
+    unset prefiller; local port=${PORT:-8000}
+    if [[ -n "${DISAGG-}" || -n "${DISAGG_HOST-}" ]]; then 
+    if [[ "{DISAGG_HOST-}" != "" ]]; then
+        prefill_hosts="${DISAGG_HOST}"
+    else
+        prefill_hosts="$( dig SRV +short +search ${DEFAULT_PREFILL_HOST} | cut -d ' ' -f 4 | sed 's/local\.$/local/' | sort | awk "{print \$1 \":${port}\"}" | paste -sd ', ' -)"
+    fi
+    prefiller="X-Prefiller-Host-Port: ${prefill_hosts}"
+    fi
+    curl -i -H 'Content-Type: application/json' -H "${prefiller-}" -d \
+    "{\"temperature\": 0,\"prompt\": \"Write as if you were a critic, and provide extensive details of the time you spent with the subject. Don't forget to provide personal anecdotes.\n\n: San Francisco\",\"max_tokens\": ${TOKENS_OUT:-100},\"model\": \"${VLLM_MODEL}\"}" "$@" \
+    "${HOST:-${DEFAULT_HOST:-localhost}}:${port}/v1/completions"
+}
+
+# Start Qwen3 for a faster and simpler MoE test harness
+function serve_simple {
+    vllm serve Qwen/Qwen3-30B-A3B-FP8 --port ${PORT:-8000} --enforce-eager --disable-log-requests --enable-expert-parallel --tensor-parallel-size 1 --data-parallel-size 2 --trust-remote-code
+}
+
+# Execute DeepEP's internode latency and tuning test
+function test_internode {
+    env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
+    WORLD_SIZE=$(( ${DP_SIZE} / ${DP_SIZE_LOCAL} )) MASTER_ADDR=${LWS_LEADER_ADDRESS} RANK=$(( ${START_RANK} / ${DP_SIZE_LOCAL} )) \
+    uv run /app/deepep/tests/test_internode.py
+}
+
+# Use to verify if the node has low internal bandwidth
+function test_intranode {
+    env -u NVSHMEM_DEBUG -u NVSHMEM_DEBUG_SUBSYS -u NVSHMEM_INFO NCCL_DEBUG= \
+    uv run /app/deepep/tests/test_intranode.py
+}
+
+function collect_vllm_env {
+    wget -O collect_env.py https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/collect_env.py && VIRTUAL_ENV=/app/venv uv run collect_env.py
+}
+
+function print_stacks {
+    pgrep 'VLLM' | xargs -P8 -I {} gdb -p {} --batch --eval-command 'py-bt' | grep -v 'New LWP'
+}
+
+function print_cuda_stacks {
+    pgrep 'VLLM' | xargs -P8 -I {} cuda-gdb -p {} --batch --eval-command 'info cuda launch trace' | grep -v 'LWP'
+}
+
+function bench_decode_guide {
+    guidellm benchmark --target "http://${HOST:-${DEFAULT_HOST}}:${PORT:-8000}" \
+    --rate-type concurrent \
+    --max-requests "${NUM_PROMPTS:-$(( ${MAX_CONCURRENCY:-10} * 3))}" \
+    --rate "${MAX_CONCURRENCY:-10}" \
+    --data "{\"prompt_tokens\": ${TOKENS_IN:-1},
+                \"output_tokens\": ${TOKENS_OUT:-100},
+                \"output_tokens_stdev\": \"1\"}" \
+    --output-path "/tmp/out.json" \
+    --output-sampling 10
+}
+
+function profile {
+    curl "${HOST}:${PORT:-8000}/start_profile" -X POST
+    sleep ${1:-3}
+    curl "${HOST}:${PORT:-8000}/stop_profile" -X POST
+}
